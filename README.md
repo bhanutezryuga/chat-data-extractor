@@ -97,7 +97,7 @@ spike/  run.py                        # earlier throwaway proof-of-concept
 ---
 
 ## Security & going online
-Locally it runs open on `127.0.0.1` (auth off). **Before exposing it to the internet**, set `APP_PASSWORD` (and `SESSION_SECRET`, `TELEGRAM_ALLOWED_CHAT_IDS`) in `.env` — then it requires login, the bot only obeys your chat, and outbound fetches are SSRF-guarded. Without `APP_PASSWORD` the app refuses to bind to anything but localhost. Full runbook (Cloudflare Tunnel + Access, or Tailscale): **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+Locally it runs open on `127.0.0.1` (auth off). **Before exposing it to the internet**, set `APP_PASSWORD` (and `SESSION_SECRET`, `TELEGRAM_ALLOWED_CHAT_IDS`) in `.env` — then it requires login, the bot only obeys your chat, and outbound fetches are SSRF-guarded. Without `APP_PASSWORD` the app refuses to bind to anything but localhost. Full runbook (Cloudflare Tunnel + Access, or Tailscale; PC / Raspberry Pi / Android hosting): **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 ## Design docs
 These were written first (PM / Dev / Architect / DBA hats). They describe a Cloudflare-serverless
