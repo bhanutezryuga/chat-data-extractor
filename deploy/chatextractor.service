@@ -1,0 +1,23 @@
+# systemd unit for the Chat Data Extractor (Raspberry Pi / any Linux).
+# Install:
+#   sudo cp deploy/chatextractor.service /etc/systemd/system/
+#   (edit User= and WorkingDirectory= below to match your setup)
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now chatextractor
+# Check:  systemctl status chatextractor   |   journalctl -u chatextractor -f
+
+[Unit]
+Description=Chat Data Extractor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/chat-data-extractor
+ExecStart=/usr/bin/python3 -m app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

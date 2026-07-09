@@ -1,0 +1,5 @@
+# The core app uses ONLY the Python standard library — `python -m app` needs no install.
+#
+# Optional: enables Instagram / TikTok video download (Instagram image posts work without it).
+#   pip install -r requirements.txt
+yt-dlp>=2025.1.1

@@ -1,0 +1,42 @@
+# ── Docs (contain personal deployment details: domain, tunnel id, chat id) ──
+docs/
+
+# ── Secrets — NEVER commit these ──────────────────────────────
+.env
+.env.*
+!.env.example
+*cookies*.txt
+ig_cookies.txt
+cookies.txt
+
+# ── Local data (extracted content, may be sensitive) ──────────
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+spike/poc.db
+spike/dashboard.html
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ── Downloaded media / temp ───────────────────────────────────
+cde_*/
+*.mp4
+*.tmp
+
+# ── OS / editor cruft ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

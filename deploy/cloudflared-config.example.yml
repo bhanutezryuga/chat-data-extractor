@@ -1,0 +1,12 @@
+# Cloudflare Tunnel config — copy to %USERPROFILE%\.cloudflared\config.yml and edit.
+# See docs/DEPLOY.md for the full walkthrough.
+
+tunnel: chatextractor
+credentials-file: C:\Users\<you>\.cloudflared\<tunnel-id>.json
+
+ingress:
+  # Public hostname -> the app on localhost (the app stays bound to 127.0.0.1)
+  - hostname: chat.<yourdomain>
+    service: http://127.0.0.1:8000
+  # Everything else is refused
+  - service: http_status:404

@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat Data Extractor</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+  header { padding: 14px 20px; background: #1e293b; position: sticky; top: 0; z-index: 5; border-bottom: 1px solid #334155; }
+  h1 { margin: 0; font-size: 17px; display: inline-block; }
+  h1 span { color: #64748b; font-weight: 400; font-size: 13px; }
+  .usage { margin-top: 8px; font-size: 12px; color: #94a3b8; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .usage b { color: #e2e8f0; }
+  .bar { width: 160px; height: 6px; background: #334155; border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .bar > i { display: block; height: 100%; background: #16a34a; }
+  .chips { margin-top: 8px; }
+  .chip { color: #fff; padding: 2px 10px; border-radius: 999px; margin-right: 6px; font-size: 12px; white-space: nowrap; }
+  .add { margin-top: 10px; display: flex; gap: 8px; }
+  .add input { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+  .add button, .btn { background: #2563eb; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
+  .add button:disabled { opacity: .5; cursor: default; }
+  .wrap { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 138px); }
+  .feed { overflow: auto; border-right: 1px solid #334155; padding: 12px; }
+  .col-title { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; }
+  .item { background: #1e293b; border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+  .item .top { display: flex; justify-content: space-between; align-items: center; }
+  .item b { text-transform: capitalize; }
+  .status { font-weight: 700; font-size: 11px; }
+  .item a { color: #60a5fa; font-size: 12px; word-break: break-all; text-decoration: none; }
+  .sum { color: #94a3b8; font-size: 12px; margin-top: 6px; }
+  .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 12px; overflow: auto; }
+  .kcol { background: #1e293b; border-radius: 10px; padding: 10px; min-width: 0; }
+  .kcol h3 { margin: 0 0 10px; font-size: 13px; color: #cbd5e1; }
+  .card { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px; margin-bottom: 8px; position: relative; cursor: pointer; }
+  .card:hover { border-color: #2563eb; }
+  .listbadge { display: inline-block; margin-top: 6px; font-size: 11px; color: #38bdf8; background: #0b2540; border: 1px solid #1e3a5f; border-radius: 999px; padding: 1px 8px; }
+  .prio { position: absolute; top: 8px; right: 8px; color: #fff; font-size: 10px; padding: 1px 6px; border-radius: 4px; }
+  .card b { display: block; padding-right: 56px; }
+  .uc { color: #94a3b8; font-size: 12px; margin-top: 4px; }
+  .ilist { margin: 6px 0 2px; padding-left: 18px; }
+  .ilist li { margin: 2px 0; color: #e2e8f0; font-size: 12px; }
+  .ilist li span { color: #94a3b8; }
+  .ilist-h { margin-top: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #38bdf8; }
+  .tags { margin-top: 6px; font-size: 11px; color: #38bdf8; }
+  .actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .actions button { background: #334155; color: #e2e8f0; border: 0; border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer; }
+  .actions button:hover { background: #475569; }
+  .empty { color: #475569; font-size: 12px; }
+  footer { padding: 6px 20px; color: #64748b; font-size: 11px; background: #1e293b; border-top: 1px solid #334155; }
+  /* modal */
+  .overlay { position: fixed; inset: 0; background: rgba(2,6,23,.7); display: none; align-items: center; justify-content: center; z-index: 50; padding: 24px; }
+  .overlay.open { display: flex; }
+  .modal { background: #1e293b; border: 1px solid #334155; border-radius: 12px; width: min(680px, 100%); max-height: 86vh; overflow: auto; padding: 20px 22px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .modal .x { float: right; background: #334155; color: #e2e8f0; border: 0; border-radius: 6px; width: 28px; height: 28px; cursor: pointer; font-size: 15px; }
+  .modal h2 { margin: 0 8px 4px 0; font-size: 18px; }
+  .m-meta { font-size: 12px; color: #94a3b8; margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .m-meta .pill { padding: 1px 8px; border-radius: 999px; color: #fff; font-size: 11px; }
+  .m-meta a { color: #60a5fa; text-decoration: none; word-break: break-all; }
+  .m-sec { margin: 14px 0; }
+  .m-sec h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #38bdf8; }
+  .m-sec p { margin: 0; color: #cbd5e1; }
+  .m-list { margin: 0; padding-left: 20px; }
+  .m-list li { margin: 4px 0; color: #e2e8f0; }
+  .m-list li span { color: #94a3b8; }
+  .m-link { font-size: 12px; margin: 2px 0 4px; }
+  .m-link a { color: #60a5fa; text-decoration: none; word-break: break-all; }
+  .m-link.muted { color: #64748b; }
+  .actchip { display: inline-block; font-size: 11px; color: #cbd5e1; background: #0f172a; border: 1px solid #334155; border-radius: 999px; padding: 0 7px; margin-left: 6px; vertical-align: middle; }
+  .m-switch { display: flex; gap: 6px; margin: 12px 0 4px; }
+  .m-switch button { background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 7px; padding: 6px 11px; font-size: 12px; cursor: pointer; }
+  .m-switch button.on { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .m-log { font-size: 11px; color: #64748b; }
+  .m-log div { padding: 1px 0; }
+  .m-actions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; border-top: 1px solid #334155; padding-top: 14px; }
+  .m-actions button { background: #334155; color: #e2e8f0; border: 0; border-radius: 7px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+  .m-actions button.primary { background: #2563eb; }
+  .m-actions button:hover { filter: brightness(1.15); }
+</style>
+</head>
+<body>
+<header>
+  <a id="logout" href="/logout" style="float:right;font-size:12px;color:#94a3b8;text-decoration:none;display:none">Sign out ⎋</a>
+  <h1>Chat Data Extractor <span>— local</span></h1>
+  <div class="usage" id="usage" title="Gemini has no token-balance API; this meters actual usage vs your daily limits (UTC)."></div>
+  <div class="chips" id="chips"></div>
+  <form class="add" id="addForm">
+    <input id="urlInput" placeholder="Paste a link (reel, short, video, article, PDF) and press Enter…" autocomplete="off">
+    <button type="submit" id="addBtn">Add</button>
+  </form>
+</header>
+
+<div class="wrap">
+  <div class="feed">
+    <h2 class="col-title">Items</h2>
+    <div id="items"></div>
+  </div>
+  <div class="board" id="board"></div>
+</div>
+
+<footer id="foot">Loading…</footer>
+
+<div class="overlay" id="overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+const COLOR = { ACTIONABLE:'#16a34a', PROCESSING:'#ca8a04', NEW:'#64748b',
+                NEEDS_REVIEW:'#d97706', FAILED:'#dc2626', AWAITING_ACTION:'#7c3aed' };
+const effAction = (action, listLen) => action || (listLen >= 2 ? 'list' : 'note');
+const PRIO  = { HIGH:'#dc2626', MEDIUM:'#ca8a04', LOW:'#16a34a' };
+const COLS  = ['TODO','IN_PROGRESS','DONE'];
+const esc = s => (s==null?'':String(s)).replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
+const safeHref = u => /^https?:\/\//i.test(u||'') ? u : '#';   // never emit javascript:/data: links
+
+async function api(path, method='GET', body) {
+  const r = await fetch(path, { method, headers: body?{'Content-Type':'application/json'}:{},
+                                body: body?JSON.stringify(body):undefined });
+  return r.json();
+}
+
+function fmt(n){ return (n||0).toLocaleString(); }
+
+function renderUsage(u){
+  const el = document.getElementById('usage');
+  if(!u || !u.enabled){
+    el.innerHTML = '<span>Gemini: <b>offline stub</b> (no API key) — no tokens used</span>';
+    return;
+  }
+  const pct = Math.min(100, Math.round(100 * u.today_tokens / (u.daily_token_budget||1)));
+  const col = pct < 70 ? '#16a34a' : pct < 90 ? '#ca8a04' : '#dc2626';
+  el.innerHTML =
+    `<span><b>${u.model}</b></span>` +
+    `<span>tokens today <b>${fmt(u.today_tokens)}</b> / ${fmt(u.daily_token_budget)} budget` +
+    ` <span class="bar"><i style="width:${pct}%;background:${col}"></i></span></span>` +
+    `<span>requests today <b>${fmt(u.today_requests)}</b> / ${fmt(u.rpd_limit)}/day` +
+    ` (<b>${fmt(u.requests_remaining)}</b> left)</span>` +
+    `<span style="color:#64748b">all-time ${fmt(u.total_tokens)} tok</span>`;
+}
+
+async function refresh() {
+  const [stats, items, tasks, use] = await Promise.all([
+    api('/api/stats'), api('/api/items'), api('/api/tasks'), api('/api/usage')]);
+  renderUsage(use);
+
+  document.getElementById('chips').innerHTML = Object.entries(stats.statuses||{})
+    .map(([s,n]) => `<span class="chip" style="background:${COLOR[s]||'#888'}">${esc(s)} ${n}</span>`).join('')
+    || '<span class="empty">No items yet — paste a link or send one to your Telegram bot.</span>';
+
+  document.getElementById('items').innerHTML = items.map(it => `
+    <div class="item">
+      <div class="top"><b>${esc(it.content_type||'?')}</b>
+        <span class="status" style="color:${COLOR[it.status]||'#888'}">${esc(it.status)}</span></div>
+      <a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>
+      ${it.summary?`<div class="sum">${esc(it.summary)}</div>`:''}
+      ${it.status==='FAILED'||it.status==='NEEDS_REVIEW'
+        ? `<div class="actions"><button onclick="reprocess('${it.id}')">↻ Reprocess</button></div>`:''}
+    </div>`).join('') || '<div class="empty">—</div>';
+
+  const buckets = { TODO:[], IN_PROGRESS:[], DONE:[], DISMISSED:[] };
+  tasks.forEach(t => (buckets[t.status]||buckets.TODO).push(t));
+  document.getElementById('board').innerHTML = COLS.map(col => `
+    <div class="kcol"><h3>${col.replace('_',' ')} (${buckets[col].length})</h3>
+      ${buckets[col].map(t => card(t)).join('') || '<div class="empty">—</div>'}
+    </div>`).join('');
+
+  document.getElementById('foot').textContent =
+    `${items.length} items · ${tasks.length} tasks · auto-refresh 5s · v1 description-only (video = V2)`;
+}
+
+function card(t) {
+  let tags = []; try { tags = JSON.parse(t.tags||'[]'); } catch(e){}
+  let items = []; try { items = JSON.parse(t.list_items||'[]'); } catch(e){}
+  const moves = {
+    TODO:[['Start','IN_PROGRESS']],
+    IN_PROGRESS:[['Done','DONE'],['Back','TODO']],
+    DONE:[['Reopen','TODO']]
+  }[t.status]||[];
+  const act = effAction(t.action, items.length);
+  const badge = (act==='list' && items.length) ? `<div class="listbadge">📋 ${items.length} items — click to open</div>` : '';
+  const aico = {note:'📝',list:'📋',translate:'🌐'}[act] || '';
+  const achip = t.action ? `<span class="actchip">${aico} ${esc(t.action)}</span>` : '';
+  return `<div class="card" onclick="openDetail('${t.item_id}')">
+    <div class="prio" style="background:${PRIO[t.priority]||'#888'}">${esc(t.priority)}</div>
+    <b>${esc(t.title)}</b>${achip}
+    ${badge}
+    ${(t.suggested_use_case && act==='note')?`<div class="uc">${esc(t.suggested_use_case)}</div>`:''}
+    <div class="tags">${(tags.map(esc).join(' · '))||esc(t.content_type)}</div>
+    <div class="actions" onclick="event.stopPropagation()">
+      ${moves.map(([label,st])=>`<button onclick="move('${t.id}','${st}')">${label}</button>`).join('')}
+      <button onclick="move('${t.id}','DISMISSED')">Dismiss</button>
+      <button onclick="openDetail('${t.item_id}')">Details</button>
+    </div></div>`;
+}
+
+async function move(id, status){ await api('/api/tasks/'+id,'POST',{status}); refresh(); }
+async function reprocess(id){ await api('/api/items/'+id+'/reprocess','POST',{}); refresh(); }
+
+// ---- detail modal ----
+let currentItem = null;
+
+async function openDetail(itemId){
+  currentItem = itemId;
+  const d = await api('/api/items/'+itemId);
+  renderDetail(d);
+  document.getElementById('overlay').classList.add('open');
+}
+function closeModal(){ document.getElementById('overlay').classList.remove('open'); currentItem = null; }
+
+function renderDetail(d){
+  const it = d.item||{}, ex = d.extraction||{}, tk = d.task||{}, logs = d.logs||[];
+  let li=[], kp=[], tags=[];
+  try { li = JSON.parse(ex.list_items||'[]'); } catch(e){}
+  try { kp = JSON.parse(ex.key_points||'[]'); } catch(e){}
+  try { tags = JSON.parse(tk.tags||'[]'); } catch(e){}
+
+  const listHtml = li.length ? `<div class="m-sec"><h4>List · ${li.length} items</h4>
+    <ul class="m-list">${li.map(x=>{
+      const o = x && typeof x === 'object';
+      const n = o?x.name:x, note = o?x.note:'', link = o?(x.link||''):'';
+      const isUrl = /\./.test(link) && !/\s/.test(link) && link.toLowerCase() !== 'link not available';
+      const href = /^https?:\/\//i.test(link) ? link : 'https://'+link;
+      const linkHtml = !link ? ''
+        : isUrl ? `<div class="m-link">🔗 <a href="${esc(safeHref(href))}" target="_blank" rel="noopener">${esc(link)}</a></div>`
+                : `<div class="m-link muted">🔗 ${esc(link)}</div>`;
+      return `<li>${esc(n)}${note?` <span>— ${esc(note)}</span>`:''}${linkHtml}</li>`;
+    }).join('')}</ul></div>` : '';
+  const kpHtml = kp.length ? `<div class="m-sec"><h4>Key points</h4>
+    <ul class="m-list">${kp.map(p=>`<li>${esc(p)}</li>`).join('')}</ul></div>` : '';
+  const act = effAction(it.action, li.length);
+  const sumHtml = ex.summary ? `<div class="m-sec"><h4>Summary</h4><p>${esc(ex.summary)}</p></div>` : '';
+  const ucHtml = tk.suggested_use_case ? `<div class="m-sec"><h4>Suggested use</h4><p>${esc(tk.suggested_use_case)}</p></div>` : '';
+  const tagHtml = tags.length ? `<div class="m-sec"><h4>Tags</h4><div class="tags">${tags.map(esc).join(' · ')}</div></div>` : '';
+  const trHtml = (ex.translation && ex.translation.trim())
+    ? `<div class="m-sec"><h4>Translation${ex.detected_language?` · from ${esc(ex.detected_language)}`:''}</h4><p>${esc(ex.translation)}</p></div>`
+    : `<div class="m-sec"><h4>Translation</h4><p style="color:#64748b">No translation — content already in the target language.</p></div>`;
+  // show only the section relevant to the chosen action
+  const body = act==='list' ? (listHtml || sumHtml)
+             : act==='translate' ? trHtml
+             : (sumHtml + kpHtml + ucHtml);
+  const ACT = {note:'📝 Note', list:'📋 List', translate:'🌐 Translate'};
+  const switcher = `<div class="m-switch">${Object.keys(ACT).map(a =>
+    `<button class="${it.action===a?'on':''}" onclick="setItemAction('${it.id}','${a}')">${ACT[a]}</button>`).join('')}</div>`;
+  const logHtml = logs.length ? `<div class="m-sec"><h4>Processing log</h4><div class="m-log">${
+    logs.map(l=>`<div>${esc((l.created_at||'').slice(11))} · ${esc(l.step)} · ${esc(l.status)} — ${esc(l.detail||'')}</div>`).join('')}</div></div>` : '';
+
+  const tmoves = { TODO:[['Start','IN_PROGRESS']], IN_PROGRESS:[['Done','DONE'],['Back to To-do','TODO']],
+                   DONE:[['Reopen','TODO']], DISMISSED:[['Restore','TODO']] }[tk.status]||[];
+  const actions = (tk.id ? tmoves.map(([l,s])=>`<button class="primary" onclick="taskStatus('${tk.id}','${s}')">${l}</button>`).join('')
+                          + `<button onclick="taskStatus('${tk.id}','DISMISSED')">Dismiss</button>` : '')
+    + `<button onclick="itemReprocess('${it.id}')">↻ Reprocess</button>`
+    + (it.raw_url?`<button onclick="window.open('${esc(safeHref(it.raw_url))}','_blank')">Open original ↗</button>`:'');
+
+  document.getElementById('modal').innerHTML = `
+    <button class="x" onclick="closeModal()">×</button>
+    <h2>${esc(tk.title||it.content_type||'Item')}</h2>
+    <div class="m-meta">
+      <span class="pill" style="background:${COLOR[it.status]||'#888'}">${esc(it.status)}</span>
+      <span class="pill" style="background:${PRIO[tk.priority]||'#475569'}">${esc(tk.priority||'—')}</span>
+      <span>${esc(it.content_type||'?')}</span>
+      ${it.raw_url?`· <a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
+    </div>
+    ${switcher}
+    ${body}${tagHtml}${logHtml}
+    <div class="m-actions">${actions}</div>`;
+}
+
+async function setItemAction(itemId, action){
+  const m=document.getElementById('modal');
+  m.innerHTML='<p style="color:#94a3b8">Switching to '+action+'…</p>';
+  await api('/api/items/'+itemId+'/action','POST',{action});
+  await refresh(); openDetail(itemId);
+}
+
+async function taskStatus(taskId, status){ await api('/api/tasks/'+taskId,'POST',{status}); await refresh(); if(currentItem) openDetail(currentItem); }
+async function itemReprocess(itemId){
+  const m=document.getElementById('modal'); m.innerHTML='<p style="color:#94a3b8">Reprocessing…</p>';
+  await api('/api/items/'+itemId+'/reprocess','POST',{}); await refresh(); openDetail(itemId);
+}
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeModal(); });
+
+document.getElementById('addForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const inp = document.getElementById('urlInput'), btn = document.getElementById('addBtn');
+  const url = inp.value.trim(); if(!url) return;
+  btn.disabled = true; btn.textContent = '…';
+  try { await api('/api/ingest','POST',{url}); inp.value=''; await refresh(); }
+  finally { btn.disabled=false; btn.textContent='Add'; }
+});
+
+fetch('/healthz').then(r=>r.json()).then(h=>{ if(h.auth) document.getElementById('logout').style.display='inline'; }).catch(()=>{});
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
