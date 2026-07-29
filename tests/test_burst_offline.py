@@ -100,5 +100,52 @@ still = con.execute("SELECT count(*) FROM items WHERE status='PROCESSING'").fetc
 con.close()
 check("F. requeue_stuck() heals items stuck in PROCESSING", still == 0, f"{still} still stuck after requeue")
 
+# G. Concurrent reprocess must NOT deadlock: the SQLite write lock must be released
+#    before the (slow) extract call, or a second reprocess dies "database is locked".
+import app.pipeline as _P            # noqa: E402
+import app.gemini as _G             # noqa: E402
+
+_fake_rule = {"id": "rule_article", "name": "Article", "content_type": "article",
+              "extraction_strategy": "readability", "purpose": "p", "action_template": "Summarize."}
+_orig_classify, _orig_fetch, _orig_stub, _orig_connect = _P.classify, _P.fetch, _G.stub, db.connect
+_P.classify = lambda con, url: _fake_rule
+_P.fetch = lambda url, strat: ("body with plenty of real signal text here " * 6, None, {"fetched": True})
+
+
+def _slow_stub(rule, url, text):
+    time.sleep(0.6)                  # simulate a slow Gemini call; lock must NOT be held here
+    return _orig_stub(rule, url, text)
+
+
+_G.stub = _slow_stub
+# shorten the busy-timeout so a regression fails fast (< the hold time) instead of hanging
+db.connect = lambda: (lambda c: (c.execute("PRAGMA busy_timeout=300"), c)[1])(_orig_connect())
+
+_gids = []
+con = db.connect()
+for i in range(4):
+    iid = db.new_id(); _gids.append(iid)
+    con.execute("INSERT INTO items (id,user_id,raw_url,status,source_chat_id,source_msg_id,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (iid, config.USER_ID, f"https://g.test/{i}", "ACTIONABLE", "G", f"g{i}", db.now(), db.now()))
+con.commit(); con.close()
+
+_rerr = []
+
+
+def _rp(iid):
+    try:
+        pipeline.reprocess(iid)
+    except Exception as e:
+        _rerr.append(repr(e))
+
+
+_gts = [threading.Thread(target=_rp, args=(i,)) for i in _gids]
+for t in _gts: t.start()
+for t in _gts: t.join()
+db.connect, _P.classify, _P.fetch, _G.stub = _orig_connect, _orig_classify, _orig_fetch, _orig_stub
+check("G. concurrent reprocess -> no 'database is locked' (lock freed before extract)",
+      not _rerr, f"errors={_rerr}")
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)

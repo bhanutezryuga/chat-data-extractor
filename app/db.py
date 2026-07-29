@@ -87,3 +87,8 @@ def log(con, item_id, step, status, detail=""):
         "INSERT INTO processing_logs (id, item_id, step, status, detail, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (new_id(), item_id, step, status, str(detail)[:500], now()))
+    # Commit each log line immediately. Logs are durable checkpoints, and — crucially —
+    # this releases the SQLite write lock BEFORE the long Gemini/network calls that follow
+    # (extract/fetch). Otherwise the write transaction stays open across that call and a
+    # concurrent reprocess/ingest blocks past the busy-timeout with "database is locked".
+    con.commit()
