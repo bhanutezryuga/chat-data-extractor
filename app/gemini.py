@@ -20,11 +20,25 @@ ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/models/"
 
 SCHEMA_HINT = (
     'Respond ONLY with JSON of this shape: '
-    '{"summary": str, "key_points": [str], '
+    '{"title": str, "category": "Reading|Watching|Listening|Learning|Shopping|Reference|Cooking|Travel|Other", '
+    '"summary": str, "key_points": [str], '
     '"list_items": [{"name": str, "note": str, "link": str}], '
     '"detected_language": str, "suggested_action": "note|list|translate", "translation": str, '
     '"task": {"title": str, "description": str, "suggested_use_case": str, '
     '"priority": "LOW|MEDIUM|HIGH", "tags": [str]}, "confidence": 0.0}')
+
+CATEGORY_INSTRUCTION = (
+    "Also give a short `title` (the human name of the thing — a book/article/video/product "
+    "title, not a sentence) and classify it into exactly ONE `category`:\n"
+    "- Reading: articles, blog posts, papers, docs, books to read\n"
+    "- Watching: videos, reels, shorts, films, talks\n"
+    "- Listening: podcasts, music, audio\n"
+    "- Learning: tutorials, courses, how-tos, skills to study\n"
+    "- Shopping: products, gear, anything to buy\n"
+    "- Reference: tools, resources, docs worth keeping on hand\n"
+    "- Cooking: recipes, food\n"
+    "- Travel: places, destinations\n"
+    "- Other: anything that fits none of the above")
 
 
 def _action_instruction():
@@ -93,7 +107,8 @@ def _generate(parts, model, media_resolution=None, timeout=300, _retry=True):
 def _prompt(rule, url, extra=""):
     return (f"{rule['action_template']}\n\n"
             f"CONTENT TYPE: {rule['content_type']}\nPURPOSE: {rule['purpose']}\n"
-            f"SOURCE URL: {url}\n{extra}\n\n{LIST_INSTRUCTION}\n\n{_action_instruction()}\n\n{SCHEMA_HINT}")
+            f"SOURCE URL: {url}\n{extra}\n\n{LIST_INSTRUCTION}\n\n{CATEGORY_INSTRUCTION}\n\n"
+            f"{_action_instruction()}\n\n{SCHEMA_HINT}")
 
 
 def translate(text, to=None):
@@ -159,7 +174,11 @@ def stub(rule, url, text):
     points = [s.strip() for s in re.split(r"[.!?]\s", snippet) if s.strip()][:3] \
         or ["(no description available)"]
     title = points[0][:60] if points else rule["content_type"].title()
+    _CAT = {"article": "Reading", "pdf": "Reading", "document": "Reading",
+            "reel": "Watching", "short": "Watching", "video": "Watching", "post": "Reference"}
     return {
+        "title": title,
+        "category": _CAT.get(rule["content_type"], "Other"),
         "summary": summary,
         "key_points": points,
         "list_items": [],

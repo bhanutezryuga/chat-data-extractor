@@ -45,6 +45,19 @@ COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()  # chr
 TRANSLATE_TO = os.environ.get("TRANSLATE_TO", "English").strip()           # default language for the Translate action
 ACTIONS      = ("note", "list", "translate")                              # v1 actions (shop/organize/share later)
 
+# --- PKM: spaced-repetition "revisit" (turn saves into a knowledge base that resurfaces itself) ---
+# The category taxonomy seeded into the DB (db.init). Kept here for the Gemini prompt + validation.
+CATEGORIES        = ("Reading", "Watching", "Listening", "Learning",
+                     "Shopping", "Reference", "Cooking", "Travel", "Other")
+REVISIT_ENABLED   = os.environ.get("REVISIT_ENABLED", "1") == "1"
+# Day-offsets for each successive revisit. Stage N uses the Nth interval; past the end we
+# keep reusing the last one. Classic spaced-repetition-ish spacing.
+REVISIT_SCHEDULE  = tuple(int(x) for x in
+                          os.environ.get("REVISIT_SCHEDULE", "1,3,7,16,35").split(",") if x.strip()) or (1,)
+REVISIT_SNOOZE_DAYS   = int(os.environ.get("REVISIT_SNOOZE_DAYS", "1"))     # how far "snooze" pushes a reminder
+REVISIT_CHECK_SECONDS = int(os.environ.get("REVISIT_CHECK_SECONDS", "1800"))  # how often the scheduler scans for due items
+REMIND_CHAT_ID        = os.environ.get("REMIND_CHAT_ID", "").strip()       # where to send reminders (default: item's origin chat)
+
 # --- Security (required before exposing to the internet) ---
 APP_PASSWORD   = os.environ.get("APP_PASSWORD", "").strip()                # set this to require login (and to allow non-localhost binding)
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "").strip()             # signs the session cookie (falls back to APP_PASSWORD)

@@ -22,6 +22,16 @@ Note↔List switching is **instant** (same extraction, different emphasis); Tran
 
 **Each item shows only its action's content** — Translate shows just the translation, List just the list, Note the summary/key-points. Translate target defaults to **English** (`TRANSLATE_TO`); any non-English content is rendered to it.
 
+## Knowledge base + revisits (so saves don't rot)
+A read-later pile is a graveyard unless it comes back to you. Every processed item also becomes a **knowledge record**: Gemini gives it a **title** and a **category** (Reading, Watching, Listening, Learning, Shopping, Reference, Cooking, Travel, Other), and any enumerated `list_items` (books, products, tools…) are split into a **collection** you can check off (To-Read, Wishlist, …).
+
+Each item is then queued on a **spaced-repetition schedule** (`REVISIT_SCHEDULE`, default `1,3,7,16,35` days). When one comes due, the bot sends a **🔔 revisit** nudge with three buttons:
+- **✅ Revisited** — advance to the next interval (further out each time).
+- **💤 Snooze** — remind again in `REVISIT_SNOOZE_DAYS`.
+- **🎓 Learned** — stop reminding (archived, 100% progress).
+
+The dashboard's **🔔 to revisit** chip opens a panel of what's due plus all your collections; every item's popup also has the revisit controls, a progress bar, and its checkable collection. Turn the whole thing off with `REVISIT_ENABLED=0`. Reminders go to the item's origin chat (or `REMIND_CHAT_ID`).
+
 ## Gemini usage (no "balance" exists)
 The Gemini API has **rate limits, not a token balance**. The app **meters** every call's real token count into the `gemini_usage` table and shows, in the dashboard header: **tokens used today vs your daily budget** (colored bar), **requests today vs requests/day**, and all-time tokens. A budget guard **defers video calls to NEEDS_REVIEW** once you hit the cap. Tune the limits in `.env` (`DAILY_TOKEN_BUDGET`, `GEMINI_RPD_LIMIT`); verify real numbers at <https://ai.google.dev/gemini-api/docs/rate-limits>.
 
@@ -86,7 +96,8 @@ app/
   rules.py      # classify a URL via the rules table
   fetch.py      # oEmbed / readability / PDF download
   gemini.py     # Gemini over raw HTTPS (+ offline stub)
-  pipeline.py   # ingest -> classify -> fetch -> extract -> task
+  pipeline.py   # ingest -> classify -> fetch -> extract -> task -> knowledge record
+  revisit.py    # spaced-repetition scheduler + due-item scanner
   telegram.py   # long-poll getUpdates (no public URL needed)
   web.py        # ThreadingHTTPServer: dashboard + JSON API
   static/index.html   # the dashboard UI
@@ -113,4 +124,4 @@ target; the **current build runs the same pipeline + schema locally in Python** 
 - [db/seed_rules.sql](db/seed_rules.sql) — 7 default rules + seed user
 
 ## Status
-**v1 + v2 working end-to-end**, validated with live Gemini: classify → extract → task → dashboard, including **multimodal video analysis** (YouTube tested live) and **token-usage metering**. Instagram/TikTok video is enabled by installing yt-dlp.
+**v1 + v2 working end-to-end**, validated with live Gemini: classify → extract → task → dashboard, including **multimodal video analysis** (YouTube tested live) and **token-usage metering**. Instagram/TikTok video is enabled by installing yt-dlp. Latest: a **PKM layer** — auto-categorized knowledge records, checkable collections, and **spaced-repetition revisit reminders** over the same bot.

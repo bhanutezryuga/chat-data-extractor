@@ -9,8 +9,9 @@ Expensive video calls are skipped when the daily Gemini budget is reached.
 import json
 import re
 import sqlite3
+from urllib.parse import urlparse
 
-from . import config, db, gemini, instagram, media, usage
+from . import config, db, gemini, instagram, media, revisit, usage
 from .rules import classify
 from .fetch import fetch
 
@@ -58,7 +59,59 @@ def _write_result(con, item_id, rule, meta, data, kind):
          json.dumps(t.get("tags", [])), db.now(), db.now()))
     _set_status(con, item_id, "ACTIONABLE", rule, data.get("confidence", 0.5))
     con.execute("UPDATE items SET action=? WHERE id=?", (_decide_action(data), item_id))
+    _write_knowledge(con, item_id, data)
     db.log(con, item_id, "generate_task", "ok", t.get("title", ""))
+
+
+def _domain(url):
+    try:
+        h = (urlparse(url).hostname or "").lower()
+        return h[4:] if h.startswith("www.") else (h or None)
+    except Exception:
+        return None
+
+
+def _valid_category(con, name):
+    """Match Gemini's category to a seeded one (case-insensitive); fall back to 'Other'."""
+    name = (name or "").strip()
+    row = con.execute("SELECT name, collection FROM categories WHERE lower(name)=lower(?)",
+                      (name,)).fetchone()
+    if row:
+        return row["name"], row["collection"]
+    other = con.execute("SELECT name, collection FROM categories WHERE name='Other'").fetchone()
+    return ("Other", None) if not other else (other["name"], other["collection"])
+
+
+def _write_knowledge(con, item_id, data):
+    """Turn a processed item into a knowledge record: title, source domain, category,
+    priority, a spaced-repetition schedule, and materialized collection items."""
+    it = con.execute("SELECT raw_url FROM items WHERE id=?", (item_id,)).fetchone()
+    url = it["raw_url"] if it else None
+    task = data.get("task") or {}
+    title = (data.get("title") or task.get("title") or "").strip()[:200] or None
+    category, collection = _valid_category(con, data.get("category"))
+    priority = (task.get("priority") or "MEDIUM").upper()
+    con.execute("UPDATE items SET title=?, source=?, category=?, priority=? WHERE id=?",
+                (title, _domain(url), category, priority, item_id))
+
+    # Materialize enumerated list_items into this category's typed collection (rebuilt each run).
+    con.execute("DELETE FROM collection_items WHERE item_id=?", (item_id,))
+    if collection:
+        for x in (data.get("list_items") or []):
+            if isinstance(x, dict):
+                name, note, link = (x.get("name") or "").strip(), x.get("note"), x.get("link")
+            else:
+                name, note, link = str(x).strip(), None, None
+            if not name:
+                continue
+            if link and str(link).lower() == "link not available":
+                link = None
+            con.execute(
+                "INSERT INTO collection_items (id,user_id,item_id,collection,name,note,link,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (db.new_id(), config.USER_ID, item_id, collection, name[:300], note, link, db.now()))
+
+    revisit.schedule_new(con, item_id)
 
 
 def _decide_action(data):

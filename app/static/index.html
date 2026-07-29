@@ -77,6 +77,25 @@
   .m-actions button { background: #334155; color: #e2e8f0; border: 0; border-radius: 7px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
   .m-actions button.primary { background: #2563eb; }
   .m-actions button:hover { filter: brightness(1.15); }
+  /* PKM: categories + revisit */
+  .catbadge { font-size: 10px; color: #cbd5e1; background: #0f172a; border: 1px solid #334155; border-radius: 999px; padding: 1px 7px; }
+  .duebadge { font-size: 10px; color: #082f49; background: #38bdf8; border-radius: 999px; padding: 1px 7px; }
+  .m-revisit { margin: 14px 0; padding: 12px; background: #0f172a; border: 1px solid #334155; border-radius: 10px; }
+  .m-revisit .r-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .m-revisit .r-head b { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #38bdf8; }
+  .m-revisit .pbar { height: 6px; background: #1e293b; border-radius: 999px; overflow: hidden; margin: 8px 0; }
+  .m-revisit .pbar > i { display: block; height: 100%; background: #0ea5e9; }
+  .r-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .r-btns button { background: #334155; color: #e2e8f0; border: 0; border-radius: 7px; padding: 6px 11px; font-size: 12px; cursor: pointer; }
+  .r-btns button:hover { background: #475569; }
+  .checklist { list-style: none; margin: 0; padding: 0; }
+  .checklist li { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; color: #e2e8f0; font-size: 13px; }
+  .checklist li.done label { text-decoration: line-through; color: #64748b; }
+  .checklist input { margin-top: 3px; cursor: pointer; }
+  .checklist .cn { font-size: 12px; color: #94a3b8; }
+  .rev-item { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+  .rev-item .rt { font-weight: 600; }
+  .rev-item a { color: #60a5fa; font-size: 12px; text-decoration: none; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -144,19 +163,28 @@ async function refresh() {
     api('/api/stats'), api('/api/items'), api('/api/tasks'), api('/api/usage')]);
   renderUsage(use);
 
-  document.getElementById('chips').innerHTML = Object.entries(stats.statuses||{})
-    .map(([s,n]) => `<span class="chip" style="background:${COLOR[s]||'#888'}">${esc(s)} ${n}</span>`).join('')
-    || '<span class="empty">No items yet — paste a link or send one to your Telegram bot.</span>';
+  const due = stats.revisit_due || 0;
+  const dueChip = due ? `<span class="chip" style="background:#0ea5e9;cursor:pointer" onclick="openRevisit()">🔔 ${due} to revisit</span>`
+                      : `<span class="chip" style="background:#334155;cursor:pointer" onclick="openRevisit()">🗂 Collections</span>`;
+  const statusChips = Object.entries(stats.statuses||{})
+    .map(([s,n]) => `<span class="chip" style="background:${COLOR[s]||'#888'}">${esc(s)} ${n}</span>`).join('');
+  document.getElementById('chips').innerHTML = dueChip +
+    (statusChips || '<span class="empty" style="margin-left:6px">No items yet — paste a link or send one to your Telegram bot.</span>');
 
-  document.getElementById('items').innerHTML = items.map(it => `
-    <div class="item">
+  const nowUtc = new Date().toISOString().slice(0,19).replace('T',' ');
+  document.getElementById('items').innerHTML = items.map(it => {
+    const isDue = it.learn_status==='active' && it.deadline && it.deadline <= nowUtc;
+    return `
+    <div class="item" onclick="openDetail('${it.id}')" style="cursor:pointer">
       <div class="top"><b>${esc(it.content_type||'?')}</b>
-        <span class="status" style="color:${COLOR[it.status]||'#888'}">${esc(it.status)}</span></div>
-      <a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>
+        <span>${it.category?`<span class="catbadge">${esc(it.category)}</span>`:''}
+        ${isDue?'<span class="duebadge">🔔 revisit</span>':''}
+        <span class="status" style="color:${COLOR[it.status]||'#888'}">${esc(it.status)}</span></span></div>
+      <a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(it.title||it.raw_url)}</a>
       ${it.summary?`<div class="sum">${esc(it.summary)}</div>`:''}
       ${it.status==='FAILED'||it.status==='NEEDS_REVIEW'
-        ? `<div class="actions"><button onclick="reprocess('${it.id}')">↻ Reprocess</button></div>`:''}
-    </div>`).join('') || '<div class="empty">—</div>';
+        ? `<div class="actions" onclick="event.stopPropagation()"><button onclick="reprocess('${it.id}')">↻ Reprocess</button></div>`:''}
+    </div>`; }).join('') || '<div class="empty">—</div>';
 
   const buckets = { TODO:[], IN_PROGRESS:[], DONE:[], DISMISSED:[] };
   tasks.forEach(t => (buckets[t.status]||buckets.TODO).push(t));
@@ -235,8 +263,32 @@ function renderDetail(d){
   const trHtml = (ex.translation && ex.translation.trim())
     ? `<div class="m-sec"><h4>Translation${ex.detected_language?` · from ${esc(ex.detected_language)}`:''}</h4><p>${esc(ex.translation)}</p></div>`
     : `<div class="m-sec"><h4>Translation</h4><p style="color:#64748b">No translation — content already in the target language.</p></div>`;
-  // show only the section relevant to the chosen action
-  const body = act==='list' ? (listHtml || sumHtml)
+  // --- PKM: revisit controls + checkable collection ---
+  const coll = d.collection_items || [];
+  const nowUtcStr = new Date().toISOString().slice(0,19).replace('T',' ');
+  const learned = it.learn_status === 'learned';
+  const dueNow = it.deadline && it.deadline <= nowUtcStr && !learned;
+  const nextTxt = learned ? '🎓 learned'
+    : it.deadline ? `next ${esc(it.deadline.slice(0,10))}${dueNow?' · due now':''}`
+    : 'not scheduled';
+  const revHtml = `<div class="m-revisit">
+    <div class="r-head"><b>🔔 Revisit</b>
+      <span style="font-size:12px;color:#94a3b8">${nextTxt} · ${it.revisit_count||0}× revisited</span></div>
+    <div class="pbar"><i style="width:${it.progress||0}%"></i></div>
+    <div class="r-btns">
+      <button onclick="markRevisit('${it.id}','revisited')">✅ Revisited</button>
+      <button onclick="markRevisit('${it.id}','snoozed')">💤 Snooze</button>
+      <button onclick="markRevisit('${it.id}','learned')">🎓 Learned</button>
+    </div></div>`;
+  const collHtml = coll.length ? `<div class="m-sec"><h4>${esc(coll[0].collection)} · ${coll.length}</h4>
+    <ul class="checklist">${coll.map(c=>{
+      const href = /^https?:\/\//i.test(c.link||'') ? c.link : 'https://'+(c.link||'');
+      const linkHtml = c.link ? `<div class="m-link">🔗 <a href="${esc(safeHref(href))}" target="_blank" rel="noopener">${esc(c.link)}</a></div>` : '';
+      return `<li class="${c.done?'done':''}"><input type="checkbox" ${c.done?'checked':''} onclick="toggleColl('${c.id}')">
+        <label>${esc(c.name)}${c.note?` <span class="cn">— ${esc(c.note)}</span>`:''}${linkHtml}</label></li>`;
+    }).join('')}</ul></div>` : '';
+  // show only the section relevant to the chosen action (the checklist replaces a plain list)
+  const body = act==='list' ? (coll.length ? '' : (listHtml || sumHtml))
              : act==='translate' ? trHtml
              : (sumHtml + kpHtml + ucHtml);
   const ACT = {note:'📝 Note', list:'📋 List', translate:'🌐 Translate'};
@@ -262,7 +314,8 @@ function renderDetail(d){
       ${it.raw_url?`· <a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
     </div>
     ${switcher}
-    ${body}${tagHtml}${logHtml}
+    ${revHtml}
+    ${body}${collHtml}${tagHtml}${logHtml}
     <div class="m-actions">${actions}</div>`;
 }
 
@@ -277,6 +330,53 @@ async function taskStatus(taskId, status){ await api('/api/tasks/'+taskId,'POST'
 async function itemReprocess(itemId){
   const m=document.getElementById('modal'); m.innerHTML='<p style="color:#94a3b8">Reprocessing…</p>';
   await api('/api/items/'+itemId+'/reprocess','POST',{}); await refresh(); openDetail(itemId);
+}
+
+// ---- PKM: revisit + collections ----
+async function markRevisit(itemId, action, from){
+  await api('/api/items/'+itemId+'/revisit','POST',{action});
+  await refresh();
+  if(from==='panel') openRevisit(); else openDetail(itemId);
+}
+async function toggleColl(id){
+  await api('/api/collection-items/'+id+'/toggle','POST',{});
+  await refresh();
+  if(currentItem) openDetail(currentItem); else openRevisit();
+}
+function collList(list){
+  return `<ul class="checklist">${list.map(c=>{
+    const href = /^https?:\/\//i.test(c.link||'') ? c.link : 'https://'+(c.link||'');
+    const linkHtml = c.link ? `<div class="m-link">🔗 <a href="${esc(safeHref(href))}" target="_blank" rel="noopener">${esc(c.link)}</a></div>` : '';
+    return `<li class="${c.done?'done':''}"><input type="checkbox" ${c.done?'checked':''} onclick="toggleColl('${c.id}')">
+      <label>${esc(c.name)}${c.note?` <span class="cn">— ${esc(c.note)}</span>`:''}${linkHtml}</label></li>`;
+  }).join('')}</ul>`;
+}
+async function openRevisit(){
+  currentItem = null;
+  const d = await api('/api/collections');
+  const due = d.due||[], items = d.items||[];
+  const dueHtml = due.length ? `<div class="m-sec"><h4>Due to revisit · ${due.length}</h4>
+    ${due.map(x=>`<div class="rev-item">
+      <div class="rt">${esc(x.title||x.content_type||'item')} ${x.category?`<span class="catbadge">${esc(x.category)}</span>`:''}</div>
+      ${x.raw_url?`<a href="${esc(safeHref(x.raw_url))}" target="_blank" rel="noopener">${esc(x.raw_url)}</a>`:''}
+      <div class="r-btns" style="margin-top:8px">
+        <button onclick="markRevisit('${x.id}','revisited','panel')">✅ Revisited</button>
+        <button onclick="markRevisit('${x.id}','snoozed','panel')">💤 Snooze</button>
+        <button onclick="markRevisit('${x.id}','learned','panel')">🎓 Learned</button>
+        <button onclick="openDetail('${x.id}')">Details</button>
+      </div></div>`).join('')}</div>`
+    : '<div class="m-sec"><h4>Due to revisit</h4><p style="color:#64748b">Nothing due right now. 🎉</p></div>';
+  const groups = {};
+  items.forEach(c => (groups[c.collection] = groups[c.collection]||[]).push(c));
+  const collHtml = Object.keys(groups).length
+    ? Object.entries(groups).map(([coll,list]) =>
+        `<div class="m-sec"><h4>${esc(coll)} · ${list.length}</h4>${collList(list)}</div>`).join('')
+    : '<div class="m-sec"><h4>Collections</h4><p style="color:#64748b">No collections yet — items with lists (books, products, tools…) show up here.</p></div>';
+  document.getElementById('modal').innerHTML = `
+    <button class="x" onclick="closeModal()">×</button>
+    <h2>🗂 Collections &amp; revisits</h2>
+    ${dueHtml}${collHtml}`;
+  document.getElementById('overlay').classList.add('open');
 }
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeModal(); });
 

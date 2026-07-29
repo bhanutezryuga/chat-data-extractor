@@ -4,7 +4,7 @@ Starts the web dashboard and (if a token is configured) the Telegram poller.
 """
 import threading
 
-from . import config, db, pipeline, web
+from . import config, db, pipeline, revisit, web
 
 
 def _requeue_stuck():
@@ -24,6 +24,8 @@ def main():
     if config.TELEGRAM_BOT_TOKEN:
         from . import telegram
         telegram.start_poller()
+        # spaced-repetition reminders go out over the same bot
+        revisit.start_scheduler(telegram.send_reminder)
     else:
         print("  [telegram] no TELEGRAM_BOT_TOKEN — Telegram disabled (web + manual add still work)")
 

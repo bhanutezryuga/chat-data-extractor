@@ -39,6 +39,23 @@ def init():
     it_cols = {r[1] for r in con.execute("PRAGMA table_info(items)").fetchall()}
     if "action" not in it_cols:
         con.execute("ALTER TABLE items ADD COLUMN action TEXT")
+    # PKM knowledge-record columns on items
+    for col, ddl in (("title", "TEXT"), ("source", "TEXT"), ("category", "TEXT"),
+                     ("priority", "TEXT"), ("deadline", "TEXT"),
+                     ("revisit_stage", "INTEGER NOT NULL DEFAULT 0"),
+                     ("revisit_count", "INTEGER NOT NULL DEFAULT 0"),
+                     ("learn_status", "TEXT NOT NULL DEFAULT 'active'"),
+                     ("progress", "INTEGER NOT NULL DEFAULT 0"), ("reminded_at", "TEXT")):
+        if col not in it_cols:
+            con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
+    # seed the category taxonomy (extensible)
+    if con.execute("SELECT count(*) FROM categories").fetchone()[0] == 0:
+        for name, coll in (("Reading", "To-Read"), ("Watching", "To-Watch"),
+                           ("Listening", "To-Listen"), ("Learning", "Study"),
+                           ("Shopping", "Wishlist"), ("Reference", "Reference"),
+                           ("Cooking", "Recipes"), ("Travel", "Places"), ("Other", None)):
+            con.execute("INSERT INTO categories (id, name, collection, created_at) "
+                        "VALUES (?, ?, ?, datetime('now'))", (new_id(), name, coll))
 
     if con.execute("SELECT count(*) FROM rules").fetchone()[0] == 0:
         # fresh DB: full seed (already includes rule_ig_post)

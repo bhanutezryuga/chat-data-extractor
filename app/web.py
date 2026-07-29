@@ -8,7 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from . import auth, config, db, netguard, pipeline, usage
+from . import auth, config, db, netguard, pipeline, revisit, usage
 
 STATIC = config.ROOT / "app" / "static"
 MAX_BODY = 1_000_000   # 1 MB request cap
@@ -119,8 +119,24 @@ class Handler(BaseHTTPRequestHandler):
                         con.execute("SELECT status, count(*) n FROM items GROUP BY status")}
             types = {r["content_type"] or "?": r["n"] for r in
                      con.execute("SELECT content_type, count(*) n FROM items GROUP BY content_type")}
+            revisit_due = revisit.due_count(con)
             con.close()
-            return self._send(200, {"statuses": statuses, "types": types})
+            return self._send(200, {"statuses": statuses, "types": types,
+                                    "revisit_due": revisit_due})
+
+        if path == "/api/collections":
+            con = db.connect()
+            cats = _rows(con, "SELECT name, collection FROM categories ORDER BY name")
+            items = _rows(con,
+                          "SELECT id, collection, name, note, link, done, item_id "
+                          "FROM collection_items ORDER BY done, created_at DESC LIMIT 500")
+            due = _rows(con,
+                        "SELECT id, title, category, content_type, raw_url, deadline, "
+                        "revisit_count, progress FROM items WHERE learn_status='active' "
+                        "AND deadline IS NOT NULL AND deadline <= ? ORDER BY deadline LIMIT 100",
+                        (db.now(),))
+            con.close()
+            return self._send(200, {"categories": cats, "items": items, "due": due})
 
         if path == "/api/usage":
             con = db.connect()
@@ -133,7 +149,9 @@ class Handler(BaseHTTPRequestHandler):
             item_id = m.group(1)
             con = db.connect()
             item = con.execute(
-                "SELECT id, content_type, action, status, raw_url, confidence, created_at "
+                "SELECT id, content_type, action, status, raw_url, confidence, created_at, "
+                "title, source, category, priority AS item_priority, deadline, revisit_stage, "
+                "revisit_count, learn_status, progress "
                 "FROM items WHERE id=?", (item_id,)).fetchone()
             if not item:
                 con.close()
@@ -149,17 +167,22 @@ class Handler(BaseHTTPRequestHandler):
             logs = _rows(con,
                          "SELECT step, status, detail, created_at FROM processing_logs "
                          "WHERE item_id=? ORDER BY created_at", (item_id,))
+            coll = _rows(con,
+                         "SELECT id, collection, name, note, link, done FROM collection_items "
+                         "WHERE item_id=? ORDER BY done, created_at", (item_id,))
             con.close()
             return self._send(200, {
                 "item": dict(item),
                 "extraction": dict(ex) if ex else None,
                 "task": dict(task) if task else None,
+                "collection_items": coll,
                 "logs": logs})
 
         if path == "/api/items":
             con = db.connect()
             items = _rows(con,
                           "SELECT i.id, i.content_type, i.action, i.status, i.raw_url, i.confidence, i.created_at, "
+                          "i.title, i.category, i.deadline, i.learn_status, i.revisit_count, "
                           "e.summary FROM items i "
                           "LEFT JOIN extractions e ON e.item_id = i.id "
                           "GROUP BY i.id ORDER BY i.created_at DESC LIMIT 200")
@@ -230,6 +253,21 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/items/([0-9a-f]+)/action$", path)
         if m:
             return self._send(200, pipeline.set_action(m.group(1), body.get("action", "")))
+
+        m = re.match(r"^/api/items/([0-9a-f]+)/revisit$", path)
+        if m:
+            return self._send(200, revisit.mark(m.group(1), body.get("action", "")))
+
+        m = re.match(r"^/api/collection-items/([0-9a-f]+)/toggle$", path)
+        if m:
+            con = db.connect()
+            cur = con.execute("UPDATE collection_items SET done = 1 - done WHERE id=?", (m.group(1),))
+            con.commit()
+            row = con.execute("SELECT done FROM collection_items WHERE id=?", (m.group(1),)).fetchone()
+            con.close()
+            if not cur.rowcount:
+                return self._send(404, {"error": "not found"})
+            return self._send(200, {"ok": True, "done": row["done"]})
 
         return self._send(404, {"error": "not found"})
 

@@ -10,7 +10,7 @@ import time
 import urllib.request
 from urllib.parse import urlencode
 
-from . import config, db, pipeline
+from . import config, db, pipeline, revisit
 
 API = "https://api.telegram.org/bot{token}/{method}"
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -67,6 +67,41 @@ def _new_kbd(item_id):
     return {"inline_keyboard": [b[:2], b[2:]]}
 
 
+def _revisit_kbd(item_id):
+    row = [{"text": "✅ Revisited", "callback_data": f"rv|{item_id}|revisited"},
+           {"text": "💤 Snooze", "callback_data": f"rv|{item_id}|snoozed"},
+           {"text": "🎓 Learned", "callback_data": f"rv|{item_id}|learned"}]
+    return {"inline_keyboard": [row]}
+
+
+def _reminder_chat(item):
+    """Where a revisit reminder goes: an explicit REMIND_CHAT_ID, else the item's origin
+    chat (numeric only — 'web' isn't a chat), else the first allow-listed chat."""
+    if config.REMIND_CHAT_ID:
+        return config.REMIND_CHAT_ID
+    src = str(item.get("source_chat_id") or "")
+    if src.lstrip("-").isdigit():
+        return src
+    return next(iter(config.TELEGRAM_ALLOWED_CHAT_IDS), None)
+
+
+def send_reminder(item):
+    """Send a spaced-repetition revisit nudge for one item (called by the scheduler)."""
+    chat_id = _reminder_chat(item)
+    if not chat_id:
+        return
+    title = item.get("title") or item.get("content_type") or "a saved item"
+    cat = item.get("category")
+    n = item.get("revisit_count") or 0
+    head = "🔔 Time to revisit" + (f" (#{n + 1})" if n else "")
+    body = f"{head}\n\n📌 {title}"
+    if cat:
+        body += f"\n🏷 {cat}"
+    if item.get("raw_url"):
+        body += f"\n{item['raw_url']}"
+    send_message(chat_id, body, _revisit_kbd(item["id"]))
+
+
 def _format_result(item_id):
     """Build the per-action result message (and keyboard) for an item."""
     con = db.connect()
@@ -115,6 +150,18 @@ def _handle_callback(cb):
         _call("answerCallbackQuery", callback_query_id=cb_id)
         return
     kind, item_id, action = parts
+
+    if kind == "rv":                                    # spaced-repetition revisit response
+        res = revisit.mark(item_id, action)
+        done = {"revisited": "✅ Nice — resurfacing again later.",
+                "snoozed": "💤 Snoozed — I'll remind you again soon.",
+                "learned": "🎓 Marked learned — no more reminders."}.get(action, "Done")
+        _call("answerCallbackQuery", callback_query_id=cb_id,
+              text=(res.get("error") or done)[:180])
+        if not res.get("error") and chat_id and mid:
+            base = (msg.get("text") or "").split("\n\n")[-1]
+            edit_message_text(chat_id, mid, f"{done}\n\n{base}".strip())
+        return
 
     if kind == "new":                                   # pre-process choice: process now with this action
         _call("answerCallbackQuery", callback_query_id=cb_id, text=f"Processing as {action}…")

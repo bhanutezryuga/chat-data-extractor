@@ -37,6 +37,17 @@ CREATE TABLE IF NOT EXISTS items (
   action         TEXT,                           -- chosen intent: note|list|translate (smart default, overridable)
   status         TEXT NOT NULL DEFAULT 'NEW',    -- NEW|PROCESSING|EXTRACTED|ACTIONABLE|NEEDS_REVIEW|FAILED
   confidence     REAL,
+  -- knowledge / PKM record
+  title          TEXT,
+  source         TEXT,                           -- domain the link came from
+  category       TEXT,                           -- Reading|Watching|Learning|Shopping|... (see categories)
+  priority       TEXT,                           -- LOW|MEDIUM|HIGH
+  deadline       TEXT,                           -- next revisit datetime (spaced repetition)
+  revisit_stage  INTEGER NOT NULL DEFAULT 0,     -- index into the spaced-repetition schedule
+  revisit_count  INTEGER NOT NULL DEFAULT 0,
+  learn_status   TEXT NOT NULL DEFAULT 'active', -- active|learned|archived
+  progress       INTEGER NOT NULL DEFAULT 0,     -- 0..100
+  reminded_at    TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (source_chat_id, source_msg_id)
@@ -44,6 +55,9 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_items_type   ON items(content_type);
 CREATE INDEX IF NOT EXISTS idx_items_user   ON items(user_id);
+CREATE INDEX IF NOT EXISTS idx_items_deadline ON items(deadline);
+CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
+CREATE INDEX IF NOT EXISTS idx_items_learn    ON items(learn_status);
 
 CREATE TABLE IF NOT EXISTS extractions (
   id           TEXT PRIMARY KEY,
@@ -110,3 +124,35 @@ CREATE TABLE IF NOT EXISTS gemini_usage (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_usage_created ON gemini_usage(created_at);
+
+-- PKM: extensible category taxonomy (each category maps to a typed collection)
+CREATE TABLE IF NOT EXISTS categories (
+  id         TEXT PRIMARY KEY,
+  name       TEXT UNIQUE NOT NULL,
+  collection TEXT,                               -- e.g. To-Read, To-Watch, Wishlist (nullable)
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- PKM: individual entities pulled from list_items (books, products, videos) as trackable rows
+CREATE TABLE IF NOT EXISTS collection_items (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id),
+  item_id    TEXT REFERENCES items(id) ON DELETE CASCADE,
+  collection TEXT NOT NULL,                      -- To-Read, To-Watch, Wishlist, ...
+  name       TEXT NOT NULL,
+  note       TEXT,
+  link       TEXT,
+  done       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_collitems_collection ON collection_items(collection);
+CREATE INDEX IF NOT EXISTS idx_collitems_item       ON collection_items(item_id);
+
+-- PKM: revisit audit trail (metrics)
+CREATE TABLE IF NOT EXISTS revisits (
+  id         TEXT PRIMARY KEY,
+  item_id    TEXT REFERENCES items(id) ON DELETE CASCADE,
+  action     TEXT NOT NULL,                      -- revisited|snoozed|learned
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_revisits_item ON revisits(item_id);

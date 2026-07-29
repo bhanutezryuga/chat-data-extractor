@@ -1,0 +1,128 @@
+"""PKM spaced-repetition: schedule "revisit" reminders for saved knowledge, advance the
+schedule when the user revisits, and stop once they mark it learned.
+
+The schedule is a list of day-offsets (config.REVISIT_SCHEDULE). A new item is queued at
+stage 0 (deadline = now + schedule[0]). Each `revisited` advances the stage (deadline =
+now + schedule[stage]); `snoozed` pushes the deadline out without advancing; `learned`
+stops reminders. Every action is logged to the `revisits` table for metrics.
+
+A daemon (start_scheduler) scans for due items and hands each to a caller-supplied
+`send_reminder` callback — so this module stays free of any Telegram dependency.
+"""
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+
+from . import config, db
+
+
+def _interval_days(stage):
+    sched = config.REVISIT_SCHEDULE or (1,)
+    return sched[min(max(stage, 0), len(sched) - 1)]
+
+
+def _future(days):
+    return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _progress(stage):
+    return min(100, int(round(100 * stage / max(1, len(config.REVISIT_SCHEDULE)))))
+
+
+def schedule_new(con, item_id):
+    """Queue an item for its first revisit — but only if revisit is on, the item is still
+    active, and it isn't already scheduled (so reprocessing never resets a user's progress)."""
+    if not config.REVISIT_ENABLED:
+        return
+    row = con.execute("SELECT deadline, learn_status FROM items WHERE id=?", (item_id,)).fetchone()
+    if not row or row["learn_status"] != "active" or row["deadline"]:
+        return
+    con.execute("UPDATE items SET revisit_stage=0, deadline=?, updated_at=? WHERE id=?",
+                (_future(_interval_days(0)), db.now(), item_id))
+
+
+def _log(con, item_id, action):
+    con.execute("INSERT INTO revisits (id, item_id, action, created_at) VALUES (?,?,?,?)",
+                (db.new_id(), item_id, action, db.now()))
+
+
+def mark(item_id, action):
+    """Apply a revisit action (revisited|snoozed|learned) and return the item's new state."""
+    action = (action or "").lower()
+    if action not in ("revisited", "snoozed", "learned"):
+        return {"error": "unknown revisit action"}
+    con = db.connect()
+    it = con.execute("SELECT revisit_stage FROM items WHERE id=?", (item_id,)).fetchone()
+    if not it:
+        con.close()
+        return {"error": "not found"}
+
+    if action == "learned":
+        con.execute("UPDATE items SET learn_status='learned', progress=100, deadline=NULL, "
+                    "updated_at=? WHERE id=?", (db.now(), item_id))
+    elif action == "snoozed":
+        con.execute("UPDATE items SET deadline=?, reminded_at=NULL, updated_at=? WHERE id=?",
+                    (_future(config.REVISIT_SNOOZE_DAYS), db.now(), item_id))
+    else:  # revisited: advance a stage and re-arm
+        stage = (it["revisit_stage"] or 0) + 1
+        con.execute("UPDATE items SET revisit_stage=?, revisit_count=revisit_count+1, deadline=?, "
+                    "reminded_at=NULL, progress=?, learn_status='active', updated_at=? WHERE id=?",
+                    (stage, _future(_interval_days(stage)), _progress(stage), db.now(), item_id))
+    _log(con, item_id, action)
+    con.commit()
+    row = dict(con.execute(
+        "SELECT id, deadline, revisit_stage, revisit_count, learn_status, progress "
+        "FROM items WHERE id=?", (item_id,)).fetchone())
+    con.close()
+    return row
+
+
+def due(con, limit=50):
+    """Active items whose revisit deadline has passed and that we haven't already reminded
+    for this cycle. (deadline is fixed-width UTC text, so string comparison sorts correctly.)"""
+    return con.execute(
+        "SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
+        "AND deadline <= ? AND (reminded_at IS NULL OR reminded_at < deadline) "
+        "ORDER BY deadline LIMIT ?", (db.now(), limit)).fetchall()
+
+
+def due_count(con):
+    return con.execute(
+        "SELECT count(*) n FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
+        "AND deadline <= ?", (db.now(),)).fetchone()["n"]
+
+
+def _mark_reminded(item_id):
+    con = db.connect()
+    con.execute("UPDATE items SET reminded_at=? WHERE id=?", (db.now(), item_id))
+    con.commit()
+    con.close()
+
+
+def _scan_loop(send_reminder):
+    print("  [revisit] scheduler started"
+          f" (schedule {list(config.REVISIT_SCHEDULE)} days, scan every {config.REVISIT_CHECK_SECONDS}s)")
+    while True:
+        try:
+            con = db.connect()
+            rows = due(con)
+            con.close()
+            for it in rows:
+                try:
+                    send_reminder(dict(it))
+                    _mark_reminded(it["id"])
+                except Exception as e:
+                    print(f"  [revisit] reminder error for {it['id']}: {e}")
+        except Exception as e:
+            print(f"  [revisit] scan error: {e}")
+        time.sleep(max(60, config.REVISIT_CHECK_SECONDS))
+
+
+def start_scheduler(send_reminder):
+    """Start the due-item scanner in a daemon thread. `send_reminder(item_dict)` is called
+    for each due item (e.g. telegram.send_reminder). No-op without revisit + a bot token."""
+    if not (config.REVISIT_ENABLED and config.TELEGRAM_BOT_TOKEN):
+        return None
+    t = threading.Thread(target=_scan_loop, args=(send_reminder,), daemon=True)
+    t.start()
+    return t
