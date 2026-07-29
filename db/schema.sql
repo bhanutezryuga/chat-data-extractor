@@ -55,9 +55,8 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_items_type   ON items(content_type);
 CREATE INDEX IF NOT EXISTS idx_items_user   ON items(user_id);
-CREATE INDEX IF NOT EXISTS idx_items_deadline ON items(deadline);
-CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
-CREATE INDEX IF NOT EXISTS idx_items_learn    ON items(learn_status);
+-- Indexes on the PKM columns (deadline/category/learn_status) are created in db.init()
+-- AFTER the column migrations run, so an older items table doesn't fail this script.
 
 CREATE TABLE IF NOT EXISTS extractions (
   id           TEXT PRIMARY KEY,

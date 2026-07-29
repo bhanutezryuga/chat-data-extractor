@@ -48,6 +48,12 @@ def init():
                      ("progress", "INTEGER NOT NULL DEFAULT 0"), ("reminded_at", "TEXT")):
         if col not in it_cols:
             con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
+    # indexes on the PKM columns — here (not in schema.sql) so they run AFTER the ALTERs above;
+    # on a pre-existing items table the columns don't exist until the migration completes.
+    for stmt in ("CREATE INDEX IF NOT EXISTS idx_items_deadline ON items(deadline)",
+                 "CREATE INDEX IF NOT EXISTS idx_items_category ON items(category)",
+                 "CREATE INDEX IF NOT EXISTS idx_items_learn    ON items(learn_status)"):
+        con.execute(stmt)
     # seed the category taxonomy (extensible)
     if con.execute("SELECT count(*) FROM categories").fetchone()[0] == 0:
         for name, coll in (("Reading", "To-Read"), ("Watching", "To-Watch"),
