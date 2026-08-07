@@ -58,6 +58,11 @@ REVISIT_SNOOZE_DAYS   = int(os.environ.get("REVISIT_SNOOZE_DAYS", "1"))     # ho
 REVISIT_CHECK_SECONDS = int(os.environ.get("REVISIT_CHECK_SECONDS", "1800"))  # how often the scheduler scans for due items
 REMIND_CHAT_ID        = os.environ.get("REMIND_CHAT_ID", "").strip()       # where to send reminders (default: item's origin chat)
 
+# --- Logseq knowledge-base export (see docs/LOGSEQ_PLAN.md). Off unless a graph dir is set. ---
+LOGSEQ_GRAPH_DIR    = os.environ.get("LOGSEQ_GRAPH_DIR", "").strip()        # path to your Logseq graph folder
+LOGSEQ_ENABLED      = os.environ.get("LOGSEQ_ENABLED", "1") == "1"
+LOGSEQ_SYNC_SECONDS = int(os.environ.get("LOGSEQ_SYNC_SECONDS", "60"))      # (Phase 2) read-back poll interval
+
 # --- Security (required before exposing to the internet) ---
 APP_PASSWORD   = os.environ.get("APP_PASSWORD", "").strip()                # set this to require login (and to allow non-localhost binding)
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "").strip()             # signs the session cookie (falls back to APP_PASSWORD)

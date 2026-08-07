@@ -32,6 +32,9 @@ Each item is then queued on a **spaced-repetition schedule** (`REVISIT_SCHEDULE`
 
 The dashboard's **🔔 to revisit** chip opens a panel of what's due plus all your collections; every item's popup also has the revisit controls, a progress bar, and its checkable collection. Turn the whole thing off with `REVISIT_ENABLED=0`. Reminders go to the item's origin chat (or `REMIND_CHAT_ID`).
 
+## Logseq export (optional)
+Point `LOGSEQ_GRAPH_DIR` at a [Logseq](https://logseq.com) graph folder and every capture is also written there as a Markdown page — `title`/`category`/`url`/`captured` properties, the summary, key points, the collection as checkable `TODO`s, and a `SCHEDULED` revisit that shows in Logseq's agenda — plus a one-line journal breadcrumb. Categories and collections become `[[pages]]`, so your saves turn into a linked, backlinked knowledge base. The page's `## Notes` section is yours and is preserved across re-exports. Off unless `LOGSEQ_GRAPH_DIR` is set. (This is the write half; two-way read-back is planned — see `docs/LOGSEQ_PLAN.md`.)
+
 ## Gemini usage (no "balance" exists)
 The Gemini API has **rate limits, not a token balance**. The app **meters** every call's real token count into the `gemini_usage` table and shows, in the dashboard header: **tokens used today vs your daily budget** (colored bar), **requests today vs requests/day**, and all-time tokens. A budget guard **defers video calls to NEEDS_REVIEW** once you hit the cap. Tune the limits in `.env` (`DAILY_TOKEN_BUDGET`, `GEMINI_RPD_LIMIT`); verify real numbers at <https://ai.google.dev/gemini-api/docs/rate-limits>.
 
@@ -98,6 +101,7 @@ app/
   gemini.py     # Gemini over raw HTTPS (+ offline stub)
   pipeline.py   # ingest -> classify -> fetch -> extract -> task -> knowledge record
   revisit.py    # spaced-repetition scheduler + due-item scanner
+  logseq.py     # export captures to a Logseq graph (Markdown pages + journal)
   telegram.py   # long-poll getUpdates (no public URL needed)
   web.py        # ThreadingHTTPServer: dashboard + JSON API
   static/index.html   # the dashboard UI

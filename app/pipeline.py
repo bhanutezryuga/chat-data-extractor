@@ -11,7 +11,7 @@ import re
 import sqlite3
 from urllib.parse import urlparse
 
-from . import config, db, gemini, instagram, media, revisit, usage
+from . import config, db, gemini, instagram, logseq, media, revisit, usage
 from .rules import classify
 from .fetch import fetch
 
@@ -61,6 +61,7 @@ def _write_result(con, item_id, rule, meta, data, kind):
     con.execute("UPDATE items SET action=? WHERE id=?", (_decide_action(data), item_id))
     _write_knowledge(con, item_id, data)
     db.log(con, item_id, "generate_task", "ok", t.get("title", ""))
+    logseq.export_item(item_id)   # post-commit (db.log committed above); no-op unless configured
 
 
 def _domain(url):
