@@ -178,6 +178,18 @@ def _write_journal(item):
         f.write(line)
 
 
+def export_all():
+    """Export every processed (ACTIONABLE) item to Logseq — for backfilling a graph after
+    enabling the feature. Returns the count written. No-op (0) if disabled."""
+    if not active():
+        return 0
+    con = db.connect()
+    ids = [r["id"] for r in con.execute(
+        "SELECT id FROM items WHERE status='ACTIONABLE' ORDER BY created_at")]
+    con.close()
+    return sum(1 for iid in ids if export_item(iid))
+
+
 def export_item(item_id):
     """Render + write one item's Logseq page and journal breadcrumb. No-op if disabled;
     never raises into the pipeline (a Logseq problem must not fail a capture)."""

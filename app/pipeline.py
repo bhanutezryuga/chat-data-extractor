@@ -95,7 +95,10 @@ def _write_knowledge(con, item_id, data):
     con.execute("UPDATE items SET title=?, source=?, category=?, priority=? WHERE id=?",
                 (title, _domain(url), category, priority, item_id))
 
-    # Materialize enumerated list_items into this category's typed collection (rebuilt each run).
+    # Rebuild the collection, but preserve the user's checked-off state — and reuse the same row
+    # id, so the Logseq `cid::` links don't churn — across a reprocess, matched by name.
+    prev = {r["name"]: (r["id"], r["done"]) for r in
+            con.execute("SELECT name, id, done FROM collection_items WHERE item_id=?", (item_id,))}
     con.execute("DELETE FROM collection_items WHERE item_id=?", (item_id,))
     if collection:
         for x in (data.get("list_items") or []):
@@ -107,10 +110,12 @@ def _write_knowledge(con, item_id, data):
                 continue
             if link and str(link).lower() == "link not available":
                 link = None
+            keep = prev.get(name[:300])
+            cid, done = (keep[0], keep[1]) if keep else (db.new_id(), 0)
             con.execute(
-                "INSERT INTO collection_items (id,user_id,item_id,collection,name,note,link,created_at)"
-                " VALUES (?,?,?,?,?,?,?,?)",
-                (db.new_id(), config.USER_ID, item_id, collection, name[:300], note, link, db.now()))
+                "INSERT INTO collection_items (id,user_id,item_id,collection,name,note,link,done,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (cid, config.USER_ID, item_id, collection, name[:300], note, link, done, db.now()))
 
     revisit.schedule_new(con, item_id)
 

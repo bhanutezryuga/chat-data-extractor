@@ -37,6 +37,8 @@ Point `LOGSEQ_GRAPH_DIR` at a [Logseq](https://logseq.com) graph folder and ever
 
 **Two-way:** a watcher reads your Logseq edits back into the app — tick a collection item's checkbox and it's marked done in the app; set a page's `status::` to `learned` and the app stops reminding you about it. The app keeps the page fresh as its own state changes, so the graph and the app stay in sync (poll interval `LOGSEQ_SYNC_SECONDS`).
 
+**Bulk export:** backfill an existing graph any time via the **⤓ Export to Logseq** button (in the dashboard's Collections panel), the Telegram `/export` command, or `POST /api/export/logseq`. Reprocessing an item preserves your checked-off collection items.
+
 ## Gemini usage (no "balance" exists)
 The Gemini API has **rate limits, not a token balance**. The app **meters** every call's real token count into the `gemini_usage` table and shows, in the dashboard header: **tokens used today vs your daily budget** (colored bar), **requests today vs requests/day**, and all-time tokens. A budget guard **defers video calls to NEEDS_REVIEW** once you hit the cap. Tune the limits in `.env` (`DAILY_TOKEN_BUDGET`, `GEMINI_RPD_LIMIT`); verify real numbers at <https://ai.google.dev/gemini-api/docs/rate-limits>.
 
