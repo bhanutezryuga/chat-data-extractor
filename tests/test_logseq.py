@@ -120,5 +120,73 @@ config.LOGSEQ_GRAPH_DIR = ""
 check("disabled (no graph dir) -> export_item no-ops", logseq.export_item(iid) is False and not logseq.active())
 config.LOGSEQ_GRAPH_DIR = old
 
+
+# ================= Phase 2: read-back (Logseq -> DB) =================
+print("\n--- Phase 2: two-way read-back ---")
+
+
+def _edit(path, old_s, new_s):
+    txt = open(path, encoding="utf-8").read().replace(old_s, new_s, 1)
+    open(path, "w", encoding="utf-8").write(txt)
+    mt = os.path.getmtime(path) + 10          # force a newer mtime so the watcher detects the change
+    os.utime(path, (mt, mt))
+
+
+# pure parse
+sample = ("item-id:: XYZ\nstatus:: learned\n\n- ## [[Wishlist]]\n"
+          "\t- DONE Alpha\n\t  cid:: c1\n\t- TODO Beta\n\t  cid:: c2\n")
+p = logseq.parse_page(sample)
+check("parse_page: item-id + status", p["item_id"] == "XYZ" and p["status"] == "learned")
+check("parse_page: per-block done via cid", p["coll"] == {"c1": True, "c2": False}, str(p["coll"]))
+
+# end-to-end sync
+iid2 = _seed_item(url="https://shop.example.com/p2")
+logseq.export_item(iid2)
+path2 = _page_path(iid2)
+con = db.connect()
+cids = {r["name"]: r["id"] for r in con.execute("SELECT name, id FROM collection_items WHERE item_id=?", (iid2,))}
+con.close()
+logseq.sync_from_logseq()   # first pass records mtimes, no user change yet
+
+
+def _done(cid):
+    con = db.connect()
+    v = con.execute("SELECT done FROM collection_items WHERE id=?", (cid,)).fetchone()["done"]
+    con.close()
+    return v
+
+
+# user checks off "Keychron K2" in Logseq
+_edit(path2, "- TODO Keychron K2", "- DONE Keychron K2")
+r = logseq.sync_from_logseq()
+check("read-back: checking a box -> collection_items.done=1", _done(cids["Keychron K2"]) == 1, str(r))
+check("read-back: the other item stays unchecked", _done(cids["NuPhy Air75"]) == 0)
+
+# user un-checks it
+_edit(path2, "- DONE Keychron K2", "- TODO Keychron K2")
+logseq.sync_from_logseq()
+check("read-back: un-checking -> done=0", _done(cids["Keychron K2"]) == 0)
+
+# user marks the whole item learned in Logseq
+_edit(path2, "status:: active", "status:: learned")
+logseq.sync_from_logseq()
+con = db.connect()
+it2 = con.execute("SELECT learn_status, deadline FROM items WHERE id=?", (iid2,)).fetchone()
+con.close()
+check("read-back: status:: learned -> learn_status=learned + deadline cleared",
+      it2["learn_status"] == "learned" and it2["deadline"] is None)
+
+# completion-only: a stale 'active' must NOT revert a learned item
+_edit(path2, "status:: learned", "status:: active")
+logseq.sync_from_logseq()
+con = db.connect()
+ls = con.execute("SELECT learn_status FROM items WHERE id=?", (iid2,)).fetchone()["learn_status"]
+con.close()
+check("read-back: never reverts learned -> active (completion-only)", ls == "learned", ls)
+
+# unchanged file is skipped on the next pass (mtime state table)
+r2 = logseq.sync_from_logseq()
+check("read-back: unchanged files skipped (mtime state)", r2["scanned"] == 0, str(r2))
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)
