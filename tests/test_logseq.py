@@ -188,6 +188,28 @@ check("read-back: never reverts learned -> active (completion-only)", ls == "lea
 r2 = logseq.sync_from_logseq()
 check("read-back: unchanged files skipped (mtime state)", r2["scanned"] == 0, str(r2))
 
+# conflicted files left by two-way sync (Syncthing copies, git merge markers) must be ignored
+check("_is_conflicted flags conflict copies + git markers, not clean files",
+      logseq._is_conflicted("p.sync-conflict-20260816.md", "") and
+      logseq._is_conflicted("p.md", "a\n<<<<<<< HEAD\nb") and
+      logseq._is_conflicted(".hidden.md", "") and
+      not logseq._is_conflicted("p.md", "clean page"))
+iid4 = _seed_item(url="https://shop.example.com/p4")
+logseq.export_item(iid4)
+logseq.sync_from_logseq()  # baseline (records mtimes)
+con = db.connect()
+cidK = con.execute("SELECT id FROM collection_items WHERE item_id=? AND name='Keychron K2'", (iid4,)).fetchone()["id"]
+con.close()
+pages_dir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
+_body = f"item-id:: {iid4}\n- ## [[Wishlist]]\n\t- DONE Keychron K2\n\t  cid:: {cidK}\n"  # would set done=1 if read
+open(os.path.join(pages_dir, "p4.sync-conflict-20260816-000000-ABCDEF.md"), "w", encoding="utf-8").write(_body)
+open(os.path.join(pages_dir, "p4-gitconflict.md"), "w", encoding="utf-8").write("<<<<<<< HEAD\n" + _body)
+logseq.sync_from_logseq()
+con = db.connect()
+doneK = con.execute("SELECT done FROM collection_items WHERE id=?", (cidK,)).fetchone()["done"]
+con.close()
+check("read-back: conflict copy + git-marker file do NOT change DB state", doneK == 0, f"done={doneK}")
+
 
 # ================= Phase 3: bulk export + reprocess preservation =================
 print("\n--- Phase 3: export_all + reprocess preservation ---")

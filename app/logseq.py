@@ -277,9 +277,20 @@ def _apply(parsed):
     return (dchg, schg)
 
 
+_GIT_CONFLICT_MARKER = "<<<<<<< "
+
+
+def _is_conflicted(name, text):
+    """A page we must NOT read back: a hidden file, a Syncthing conflict copy
+    (`*.sync-conflict-*`), or a file with an unresolved git merge marker. Two-way sync tools leave
+    these behind; treating them as real pages would apply stale or duplicated state."""
+    return name.startswith(".") or ".sync-conflict-" in name or _GIT_CONFLICT_MARKER in text
+
+
 def sync_from_logseq():
     """Scan the graph's pages for files changed since last sync and read user edits back into the
-    DB. Idempotent; safe to run repeatedly (re-reading the app's own writes is a no-op)."""
+    DB. Idempotent; safe to run repeatedly (re-reading the app's own writes is a no-op).
+    Conflicted files left by two-way sync (Syncthing copies, git merge markers) are skipped."""
     empty = {"scanned": 0, "done_updates": 0, "status_updates": 0}
     if not active():
         return empty
@@ -304,6 +315,8 @@ def sync_from_logseq():
             with open(path, encoding="utf-8") as f:
                 text = f.read()
         except OSError:
+            continue
+        if _is_conflicted(name, text):
             continue
         d, s = _apply(parse_page(text))
         dc += d
