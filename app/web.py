@@ -8,7 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from . import auth, config, db, netguard, pipeline, revisit, usage
+from . import auth, config, db, logseq, netguard, pipeline, revisit, usage
 
 STATIC = config.ROOT / "app" / "static"
 MAX_BODY = 1_000_000   # 1 MB request cap
@@ -122,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
             revisit_due = revisit.due_count(con)
             con.close()
             return self._send(200, {"statuses": statuses, "types": types,
-                                    "revisit_due": revisit_due})
+                                    "revisit_due": revisit_due, "logseq": logseq.active()})
 
         if path == "/api/collections":
             con = db.connect()
@@ -257,6 +257,12 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/items/([0-9a-f]+)/revisit$", path)
         if m:
             return self._send(200, revisit.mark(m.group(1), body.get("action", "")))
+
+        if path == "/api/export/logseq":
+            if not logseq.active():
+                return self._send(200, {"enabled": False,
+                                        "error": "LOGSEQ_GRAPH_DIR not set"})
+            return self._send(200, {"enabled": True, "exported": logseq.export_all()})
 
         m = re.match(r"^/api/collection-items/([0-9a-f]+)/toggle$", path)
         if m:

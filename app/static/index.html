@@ -132,6 +132,7 @@ const PRIO  = { HIGH:'#dc2626', MEDIUM:'#ca8a04', LOW:'#16a34a' };
 const COLS  = ['TODO','IN_PROGRESS','DONE'];
 const esc = s => (s==null?'':String(s)).replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
 const safeHref = u => /^https?:\/\//i.test(u||'') ? u : '#';   // never emit javascript:/data: links
+let LOGSEQ = false;   // whether Logseq export is configured (from /api/stats)
 
 async function api(path, method='GET', body) {
   const r = await fetch(path, { method, headers: body?{'Content-Type':'application/json'}:{},
@@ -163,6 +164,7 @@ async function refresh() {
     api('/api/stats'), api('/api/items'), api('/api/tasks'), api('/api/usage')]);
   renderUsage(use);
 
+  LOGSEQ = !!stats.logseq;
   const due = stats.revisit_due || 0;
   const dueChip = due ? `<span class="chip" style="background:#0ea5e9;cursor:pointer" onclick="openRevisit()">🔔 ${due} to revisit</span>`
                       : `<span class="chip" style="background:#334155;cursor:pointer" onclick="openRevisit()">🗂 Collections</span>`;
@@ -372,11 +374,21 @@ async function openRevisit(){
     ? Object.entries(groups).map(([coll,list]) =>
         `<div class="m-sec"><h4>${esc(coll)} · ${list.length}</h4>${collList(list)}</div>`).join('')
     : '<div class="m-sec"><h4>Collections</h4><p style="color:#64748b">No collections yet — items with lists (books, products, tools…) show up here.</p></div>';
+  const exportBtn = LOGSEQ
+    ? `<button class="btn" style="float:right;font-size:12px;padding:5px 10px" onclick="exportLogseq(this)">⤓ Export to Logseq</button>` : '';
   document.getElementById('modal').innerHTML = `
     <button class="x" onclick="closeModal()">×</button>
-    <h2>🗂 Collections &amp; revisits</h2>
+    ${exportBtn}<h2>🗂 Collections &amp; revisits</h2>
     ${dueHtml}${collHtml}`;
   document.getElementById('overlay').classList.add('open');
+}
+async function exportLogseq(btn){
+  if(btn){ btn.disabled = true; btn.textContent = 'Exporting…'; }
+  const r = await api('/api/export/logseq','POST',{});
+  if(btn){
+    btn.disabled = false;
+    btn.textContent = r.enabled ? `✓ Exported ${r.exported}` : '⚠ Logseq off';
+  }
 }
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeModal(); });
 

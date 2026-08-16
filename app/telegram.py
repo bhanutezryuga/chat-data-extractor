@@ -10,7 +10,7 @@ import time
 import urllib.request
 from urllib.parse import urlencode
 
-from . import config, db, pipeline, revisit
+from . import config, db, logseq, pipeline, revisit
 
 API = "https://api.telegram.org/bot{token}/{method}"
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -226,8 +226,17 @@ def handle_update(u):
         send_message(chat_id,
                      "Send a link and I'll auto-process it, or use `new <link>` to choose the "
                      "action first (Note / List / Translate / Auto).\n"
-                     f"Your chat id: {chat_id}  (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)\n"
+                     + ("`/export` → write everything to your Logseq graph.\n" if logseq.active() else "")
+                     + f"Your chat id: {chat_id}  (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)\n"
                      f"Dashboard: http://{config.HOST}:{config.PORT}")
+        return
+
+    if low.startswith("/export"):
+        if not logseq.active():
+            send_message(chat_id, "Logseq export is off — set LOGSEQ_GRAPH_DIR in .env and restart.")
+        else:
+            n = logseq.export_all()
+            send_message(chat_id, f"⤓ Exported {n} item(s) to your Logseq graph.")
         return
 
     # `new <link>` (or `/new`) — choose the action BEFORE processing

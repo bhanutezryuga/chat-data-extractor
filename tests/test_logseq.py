@@ -188,5 +188,41 @@ check("read-back: never reverts learned -> active (completion-only)", ls == "lea
 r2 = logseq.sync_from_logseq()
 check("read-back: unchanged files skipped (mtime state)", r2["scanned"] == 0, str(r2))
 
+
+# ================= Phase 3: bulk export + reprocess preservation =================
+print("\n--- Phase 3: export_all + reprocess preservation ---")
+
+con = db.connect()
+n_actionable = con.execute("SELECT count(*) n FROM items WHERE status='ACTIONABLE'").fetchone()["n"]
+con.close()
+exported = logseq.export_all()
+check("export_all exports every ACTIONABLE item", exported == n_actionable and exported >= 2, f"{exported}/{n_actionable}")
+
+# reprocess must NOT wipe a checked-off collection item (preserve done + stable cid)
+iid3 = _seed_item(url="https://shop.example.com/p3")
+con = db.connect()
+cid_k = con.execute("SELECT id FROM collection_items WHERE item_id=? AND name='Keychron K2'", (iid3,)).fetchone()["id"]
+con.execute("UPDATE collection_items SET done=1 WHERE id=?", (cid_k,))
+con.commit(); con.close()
+# re-run _write_knowledge with the SAME list_items (what reprocess does)
+same = {"title": "Best keyboards 2026", "category": "shopping",
+        "task": {"title": "Pick a keyboard", "priority": "high"},
+        "list_items": [{"name": "Keychron K2", "note": "hot-swap", "link": "keychron.com/k2"},
+                       {"name": "NuPhy Air75", "note": "low profile", "link": "link not available"}]}
+con = db.connect(); pipeline._write_knowledge(con, iid3, same); con.commit(); con.close()
+con = db.connect()
+row = con.execute("SELECT id, done FROM collection_items WHERE item_id=? AND name='Keychron K2'", (iid3,)).fetchone()
+n_now = con.execute("SELECT count(*) n FROM collection_items WHERE item_id=?", (iid3,)).fetchone()["n"]
+con.close()
+check("reprocess preserves checked-off done state", row["done"] == 1)
+check("reprocess reuses the same cid (Logseq link stable)", row["id"] == cid_k)
+check("reprocess doesn't duplicate collection rows", n_now == 2, str(n_now))
+
+# export off -> export_all returns 0
+old2 = config.LOGSEQ_GRAPH_DIR
+config.LOGSEQ_GRAPH_DIR = ""
+check("export_all no-ops when disabled", logseq.export_all() == 0)
+config.LOGSEQ_GRAPH_DIR = old2
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)
