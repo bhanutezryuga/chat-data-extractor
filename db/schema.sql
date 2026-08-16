@@ -155,3 +155,10 @@ CREATE TABLE IF NOT EXISTS revisits (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_revisits_item ON revisits(item_id);
+
+-- Logseq two-way sync: remember each exported page's mtime so read-back only re-parses changed files
+CREATE TABLE IF NOT EXISTS logseq_state (
+  path       TEXT PRIMARY KEY,
+  mtime      REAL,
+  synced_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);

@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import config, db
+from . import config, db, logseq
 
 
 def _interval_days(stage):
@@ -74,6 +74,7 @@ def mark(item_id, action):
         "SELECT id, deadline, revisit_stage, revisit_count, learn_status, progress "
         "FROM items WHERE id=?", (item_id,)).fetchone())
     con.close()
+    logseq.export_item(item_id)   # keep the Logseq page in sync with the new state (no-op if off)
     return row
 
 

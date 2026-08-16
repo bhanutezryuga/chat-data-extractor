@@ -4,7 +4,7 @@ Starts the web dashboard and (if a token is configured) the Telegram poller.
 """
 import threading
 
-from . import config, db, pipeline, revisit, web
+from . import config, db, logseq, pipeline, revisit, web
 
 
 def _requeue_stuck():
@@ -28,6 +28,12 @@ def main():
         revisit.start_scheduler(telegram.send_reminder)
     else:
         print("  [telegram] no TELEGRAM_BOT_TOKEN — Telegram disabled (web + manual add still work)")
+
+    # Logseq two-way sync: read user edits (checkboxes, learned) back into the DB
+    if logseq.active():
+        logseq.start_watcher()
+    else:
+        print("  [logseq] export off (set LOGSEQ_GRAPH_DIR to enable)")
 
     print(f"  [extract] {'Gemini ' + config.GEMINI_MODEL if config.USE_GEMINI else 'offline stub (no GEMINI_API_KEY)'}")
     web.serve()

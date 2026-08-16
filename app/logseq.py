@@ -13,6 +13,8 @@ Pure `render_page` keeps the Markdown mapping unit-testable; `export_item` does 
 import json
 import os
 import re
+import threading
+import time
 from datetime import datetime
 
 from . import config, db
@@ -202,3 +204,126 @@ def export_item(item_id):
     except Exception as e:
         print(f"  [logseq] export failed for {item_id}: {e}")
         return False
+
+
+# ---- Phase 2: read-back (Logseq -> DB) ------------------------------------
+# The page file is a projection of DB state that the app refreshes on every change; the user's
+# edits we read back are the checkbox done-state and a completion status. Anything the app owns
+# (summary/task/schedule) is ignored on read-back. See docs/LOGSEQ_PLAN.md for the conflict policy.
+
+_TASK_RE = re.compile(r"-\s+(TODO|DOING|NOW|LATER|DONE|CANCELED|CANCELLED)\b")
+
+
+def parse_page(text):
+    """Extract the read-back-relevant bits from a page: item id, page status, and the done-state
+    of each collection block (keyed by its `cid::`). Pure — no I/O."""
+    item_id = status = None
+    coll = {}
+    cur_done = None                      # done-state of the most recent task bullet
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("- "):
+            m = _TASK_RE.match(s)
+            cur_done = (m.group(1) == "DONE") if m else None
+        elif s.startswith("item-id::") and item_id is None:
+            item_id = s.split("::", 1)[1].strip()
+        elif s.startswith("status::") and status is None:
+            status = s.split("::", 1)[1].strip().strip("[]")
+        elif s.startswith("cid::") and cur_done is not None:
+            coll[s.split("::", 1)[1].strip()] = cur_done
+    return {"item_id": item_id, "status": status, "coll": coll}
+
+
+def _apply(parsed):
+    """Apply parsed user-edits to the DB. Returns (done_changes, status_changes)."""
+    if not parsed["item_id"]:
+        return (0, 0)
+    con = db.connect()
+    it = con.execute("SELECT id, learn_status FROM items WHERE id=?", (parsed["item_id"],)).fetchone()
+    if not it:
+        con.close()
+        return (0, 0)
+    dchg = 0
+    for cid, done in parsed["coll"].items():
+        cur = con.execute("SELECT done FROM collection_items WHERE id=? AND item_id=?",
+                          (cid, it["id"])).fetchone()
+        if cur is not None and bool(cur["done"]) != done:
+            con.execute("UPDATE collection_items SET done=? WHERE id=?", (1 if done else 0, cid))
+            dchg += 1
+    # Completion-only status read-back: user may mark learned/archived in Logseq; never revert to
+    # active from a (possibly stale) file — un-archiving is done in the app.
+    schg = 0
+    st = (parsed["status"] or "").lower()
+    if st in ("learned", "archived") and it["learn_status"] == "active":
+        extra = ", deadline=NULL, progress=100" if st == "learned" else ""
+        con.execute(f"UPDATE items SET learn_status=?{extra}, updated_at=? WHERE id=?",
+                    (st, db.now(), it["id"]))
+        schg = 1
+    if dchg or schg:
+        con.commit()
+    con.close()
+    return (dchg, schg)
+
+
+def sync_from_logseq():
+    """Scan the graph's pages for files changed since last sync and read user edits back into the
+    DB. Idempotent; safe to run repeatedly (re-reading the app's own writes is a no-op)."""
+    empty = {"scanned": 0, "done_updates": 0, "status_updates": 0}
+    if not active():
+        return empty
+    pages = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
+    if not os.path.isdir(pages):
+        return empty
+    con = db.connect()
+    seen = {r["path"]: r["mtime"] for r in con.execute("SELECT path, mtime FROM logseq_state")}
+    con.close()
+    scanned = dc = sc = 0
+    for name in os.listdir(pages):
+        if not name.endswith(".md"):
+            continue
+        path = os.path.join(pages, name)
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            continue
+        if seen.get(path) is not None and mt <= seen[path]:
+            continue                                     # unchanged since last sync
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        d, s = _apply(parse_page(text))
+        dc += d
+        sc += s
+        scanned += 1
+        con = db.connect()
+        con.execute("INSERT INTO logseq_state (path, mtime, synced_at) VALUES (?,?,?) "
+                    "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, synced_at=excluded.synced_at",
+                    (path, mt, db.now()))
+        con.commit()
+        con.close()
+    return {"scanned": scanned, "done_updates": dc, "status_updates": sc}
+
+
+def start_watcher(apply_fn=None):
+    """Poll the graph for user edits every LOGSEQ_SYNC_SECONDS. No-op unless configured."""
+    if not active():
+        return None
+    fn = apply_fn or sync_from_logseq
+
+    def loop():
+        print(f"  [logseq] read-back watcher started (every {config.LOGSEQ_SYNC_SECONDS}s "
+              f"<- {config.LOGSEQ_GRAPH_DIR})")
+        while True:
+            try:
+                r = fn()
+                if r.get("done_updates") or r.get("status_updates"):
+                    print(f"  [logseq] read back: {r['done_updates']} done, {r['status_updates']} status")
+            except Exception as e:
+                print(f"  [logseq] sync error: {e}")
+            time.sleep(max(15, config.LOGSEQ_SYNC_SECONDS))
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return t
