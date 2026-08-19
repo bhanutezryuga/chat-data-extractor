@@ -57,6 +57,11 @@ REVISIT_SCHEDULE  = tuple(int(x) for x in
 REVISIT_SNOOZE_DAYS   = int(os.environ.get("REVISIT_SNOOZE_DAYS", "1"))     # how far "snooze" pushes a reminder
 REVISIT_CHECK_SECONDS = int(os.environ.get("REVISIT_CHECK_SECONDS", "1800"))  # how often the scheduler scans for due items
 REMIND_CHAT_ID        = os.environ.get("REMIND_CHAT_ID", "").strip()       # where to send reminders (default: item's origin chat)
+# How revisits surface: "digest" = one weekly review message; "peritem" = a nudge per item as it
+# comes due (Revisited/Snooze/Learned buttons); "off" = neither (review in Logseq only).
+REVISIT_MODE          = os.environ.get("REVISIT_MODE", "digest").strip().lower()
+DIGEST_INTERVAL_DAYS  = int(os.environ.get("DIGEST_INTERVAL_DAYS", "7"))    # how often the auto digest is sent
+DIGEST_LOOKAHEAD_DAYS = int(os.environ.get("DIGEST_LOOKAHEAD_DAYS", "7"))   # include items due within this window (+ overdue)
 
 # --- Logseq knowledge-base export (see docs/LOGSEQ_PLAN.md). Off unless a graph dir is set. ---
 LOGSEQ_GRAPH_DIR    = os.environ.get("LOGSEQ_GRAPH_DIR", "").strip()        # path to your Logseq graph folder

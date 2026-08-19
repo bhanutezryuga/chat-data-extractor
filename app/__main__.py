@@ -24,8 +24,11 @@ def main():
     if config.TELEGRAM_BOT_TOKEN:
         from . import telegram
         telegram.start_poller()
-        # spaced-repetition reminders go out over the same bot
-        revisit.start_scheduler(telegram.send_reminder)
+        # how revisits surface over the bot (config.REVISIT_MODE)
+        if config.REVISIT_MODE == "peritem":
+            revisit.start_scheduler(telegram.send_reminder)   # a nudge per item as it comes due
+        elif config.REVISIT_MODE == "digest":
+            revisit.start_digest(telegram.send_review_digest)  # one weekly review message
     else:
         print("  [telegram] no TELEGRAM_BOT_TOKEN — Telegram disabled (web + manual add still work)")
 

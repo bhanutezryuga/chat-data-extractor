@@ -93,6 +93,14 @@ def due_count(con):
         "AND deadline <= ?", (db.now(),)).fetchone()["n"]
 
 
+def due_within(con, days, limit=200):
+    """Active items due to revisit within the next `days` (including overdue) — the weekly-review set."""
+    horizon = _future(days)
+    return con.execute(
+        "SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
+        "AND deadline <= ? ORDER BY deadline LIMIT ?", (horizon, limit)).fetchall()
+
+
 def _mark_reminded(item_id):
     con = db.connect()
     con.execute("UPDATE items SET reminded_at=? WHERE id=?", (db.now(), item_id))
@@ -125,5 +133,55 @@ def start_scheduler(send_reminder):
     if not (config.REVISIT_ENABLED and config.TELEGRAM_BOT_TOKEN):
         return None
     t = threading.Thread(target=_scan_loop, args=(send_reminder,), daemon=True)
+    t.start()
+    return t
+
+
+# ---- weekly review digest -------------------------------------------------
+
+def get_meta(key):
+    con = db.connect()
+    row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    con.close()
+    return row["value"] if row else None
+
+
+def set_meta(key, value):
+    con = db.connect()
+    con.execute("INSERT INTO meta (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+    con.commit()
+    con.close()
+
+
+def _digest_due():
+    """True if a weekly digest is due (>= DIGEST_INTERVAL_DAYS since the last one). On first run,
+    seeds the timestamp so the first auto digest lands one interval later (use /review to test now)."""
+    last = get_meta("last_digest_sent")
+    if not last:
+        set_meta("last_digest_sent", db.now())
+        return False
+    return last <= _future(-config.DIGEST_INTERVAL_DAYS)   # last is older than interval-days ago
+
+
+def _digest_loop(send_digest):
+    print(f"  [revisit] weekly digest mode (every {config.DIGEST_INTERVAL_DAYS}d, "
+          f"items due within {config.DIGEST_LOOKAHEAD_DAYS}d)")
+    while True:
+        try:
+            if _digest_due():
+                send_digest()
+                set_meta("last_digest_sent", db.now())
+        except Exception as e:
+            print(f"  [revisit] digest error: {e}")
+        time.sleep(max(300, config.REVISIT_CHECK_SECONDS))
+
+
+def start_digest(send_digest):
+    """Start the weekly-digest daemon. `send_digest()` builds+sends the review message
+    (e.g. telegram.send_review_digest). No-op without revisit + a bot token + digest mode."""
+    if not (config.REVISIT_ENABLED and config.TELEGRAM_BOT_TOKEN):
+        return None
+    t = threading.Thread(target=_digest_loop, args=(send_digest,), daemon=True)
     t.start()
     return t

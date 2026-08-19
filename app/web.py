@@ -106,7 +106,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, {"error": "unauthorized"})
             return self._send(200, auth.login_page(), "text/html; charset=utf-8")
 
-        if path in ("/", "/index.html"):
+        if path in ("/", "/minimal.html"):     # minimal metrics view (default)
+            try:
+                return self._send(200, (STATIC / "minimal.html").read_text(encoding="utf-8"),
+                                  "text/html; charset=utf-8")
+            except Exception as e:
+                return self._send(500, f"dashboard missing: {e}", "text/plain")
+        if path in ("/full", "/index.html"):   # full dashboard (feed + kanban + collections) — kept
             try:
                 return self._send(200, (STATIC / "index.html").read_text(encoding="utf-8"),
                                   "text/html; charset=utf-8")
@@ -119,10 +125,14 @@ class Handler(BaseHTTPRequestHandler):
                         con.execute("SELECT status, count(*) n FROM items GROUP BY status")}
             types = {r["content_type"] or "?": r["n"] for r in
                      con.execute("SELECT content_type, count(*) n FROM items GROUP BY content_type")}
+            categories = {r["category"]: r["n"] for r in con.execute(
+                "SELECT category, count(*) n FROM items WHERE category IS NOT NULL GROUP BY category ORDER BY n DESC")}
+            learned = con.execute("SELECT count(*) n FROM items WHERE learn_status='learned'").fetchone()["n"]
             revisit_due = revisit.due_count(con)
             con.close()
-            return self._send(200, {"statuses": statuses, "types": types,
-                                    "revisit_due": revisit_due, "logseq": logseq.active()})
+            return self._send(200, {"statuses": statuses, "types": types, "categories": categories,
+                                    "learned": learned, "revisit_due": revisit_due,
+                                    "logseq": logseq.active()})
 
         if path == "/api/collections":
             con = db.connect()

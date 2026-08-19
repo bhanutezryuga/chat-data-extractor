@@ -162,3 +162,9 @@ CREATE TABLE IF NOT EXISTS logseq_state (
   mtime      REAL,
   synced_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- small key/value store for app state (e.g. when the weekly review digest was last sent)
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);

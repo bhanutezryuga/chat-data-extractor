@@ -102,6 +102,31 @@ def send_reminder(item):
     send_message(chat_id, body, _revisit_kbd(item["id"]))
 
 
+def send_review_digest(chat_id=None):
+    """Send one weekly-review message listing items due to revisit. Returns the count.
+    chat_id=None (the auto weekly send) goes to REMIND_CHAT_ID / the first allow-listed chat."""
+    con = db.connect()
+    rows = [dict(r) for r in revisit.due_within(con, config.DIGEST_LOOKAHEAD_DAYS)]
+    con.close()
+    chat = chat_id or config.REMIND_CHAT_ID or next(iter(config.TELEGRAM_ALLOWED_CHAT_IDS), None)
+    if not chat:
+        return 0
+    if not rows:
+        send_message(chat, "📚 Weekly review — nothing due right now. ✅")
+        return 0
+    lines = [f"📚 Weekly review — {len(rows)} to revisit\n"]
+    for i, r in enumerate(rows[:20], 1):
+        cat = f"  [{r['category']}]" if r.get("category") else ""
+        lines.append(f"{i}. {r.get('title') or r.get('content_type') or 'item'}{cat}")
+        if r.get("raw_url"):
+            lines.append(f"   {r['raw_url']}")
+    if len(rows) > 20:
+        lines.append(f"\n+{len(rows) - 20} more")
+    lines.append("\nOpen Logseq to review.")
+    send_message(chat, "\n".join(lines))
+    return len(rows)
+
+
 def _format_result(item_id):
     """Build the per-action result message (and keyboard) for an item."""
     con = db.connect()
@@ -226,6 +251,7 @@ def handle_update(u):
         send_message(chat_id,
                      "Send a link and I'll auto-process it, or use `new <link>` to choose the "
                      "action first (Note / List / Translate / Auto).\n"
+                     "`/review` → what's due to revisit this week.\n"
                      + ("`/export` → write everything to your Logseq graph.\n" if logseq.active() else "")
                      + f"Your chat id: {chat_id}  (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)\n"
                      f"Dashboard: http://{config.HOST}:{config.PORT}")
@@ -237,6 +263,10 @@ def handle_update(u):
         else:
             n = logseq.export_all()
             send_message(chat_id, f"⤓ Exported {n} item(s) to your Logseq graph.")
+        return
+
+    if low.startswith("/review"):          # on-demand weekly review digest
+        send_review_digest(chat_id=chat_id)
         return
 
     # `new <link>` (or `/new`) — choose the action BEFORE processing

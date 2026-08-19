@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge Base</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+  header { padding: 16px 22px; background: #1e293b; border-bottom: 1px solid #334155; }
+  h1 { margin: 0; font-size: 18px; display: inline-block; }
+  h1 span { color: #64748b; font-weight: 400; font-size: 13px; }
+  .links { float: right; font-size: 12px; }
+  .links a { color: #94a3b8; text-decoration: none; margin-left: 14px; }
+  .links a:hover { color: #e2e8f0; }
+  .usage { margin-top: 10px; font-size: 12px; color: #94a3b8; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .usage b { color: #e2e8f0; }
+  .bar { width: 140px; height: 6px; background: #334155; border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .bar > i { display: block; height: 100%; background: #16a34a; }
+  main { max-width: 900px; margin: 0 auto; padding: 22px; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  @media (max-width: 620px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 16px; }
+  .tile .n { font-size: 30px; font-weight: 700; line-height: 1; }
+  .tile .l { color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-top: 8px; }
+  .tile.accent .n { color: #0ea5e9; }
+  .sec { margin-top: 26px; }
+  .sec h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin: 0 0 10px; }
+  .cats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cat { background: #1e293b; border: 1px solid #334155; border-radius: 999px; padding: 4px 12px; font-size: 13px; }
+  .cat b { color: #38bdf8; }
+  .rec { display: flex; flex-direction: column; gap: 8px; }
+  .item { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 10px 12px; }
+  .item .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .item .t { font-weight: 600; }
+  .catbadge { font-size: 10px; color: #cbd5e1; background: #0f172a; border: 1px solid #334155; border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
+  .status { font-weight: 700; font-size: 10px; }
+  .item a { color: #60a5fa; font-size: 12px; text-decoration: none; word-break: break-all; }
+  .sum { color: #94a3b8; font-size: 12px; margin-top: 4px; }
+  .empty { color: #475569; font-size: 13px; }
+  footer { text-align: center; color: #64748b; font-size: 11px; padding: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="links">
+    <a href="/full">Full dashboard →</a>
+    <a id="logout" href="/logout" style="display:none">Sign out ⎋</a>
+  </div>
+  <h1>Knowledge Base <span>— capture → Logseq</span></h1>
+  <div class="usage" id="usage"></div>
+</header>
+
+<main>
+  <div class="tiles" id="tiles"></div>
+  <div class="sec"><h2>By category</h2><div class="cats" id="cats"></div></div>
+  <div class="sec"><h2>Recent captures</h2><div class="rec" id="recent"></div></div>
+</main>
+
+<footer id="foot">Loading…</footer>
+
+<script>
+const COLOR = { ACTIONABLE:'#16a34a', PROCESSING:'#ca8a04', NEW:'#64748b',
+                NEEDS_REVIEW:'#d97706', FAILED:'#dc2626', AWAITING_ACTION:'#7c3aed' };
+const esc = s => (s==null?'':String(s)).replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
+const safeHref = u => /^https?:\/\//i.test(u||'') ? u : '#';
+const fmt = n => (n||0).toLocaleString();
+
+async function api(p){ const r = await fetch(p); return r.json(); }
+
+function renderUsage(u){
+  const el = document.getElementById('usage');
+  if(!u || !u.enabled){ el.innerHTML = '<span>Gemini: <b>offline stub</b> (no API key)</span>'; return; }
+  const pct = Math.min(100, Math.round(100 * u.today_tokens / (u.daily_token_budget||1)));
+  const col = pct < 70 ? '#16a34a' : pct < 90 ? '#ca8a04' : '#dc2626';
+  el.innerHTML =
+    `<span><b>${esc(u.model)}</b></span>` +
+    `<span>tokens today <b>${fmt(u.today_tokens)}</b>/${fmt(u.daily_token_budget)} ` +
+    `<span class="bar"><i style="width:${pct}%;background:${col}"></i></span></span>` +
+    `<span>requests <b>${fmt(u.today_requests)}</b>/${fmt(u.rpd_limit)}</span>`;
+}
+
+async function refresh(){
+  const [stats, use, items] = await Promise.all([api('/api/stats'), api('/api/usage'), api('/api/items')]);
+  renderUsage(use);
+
+  const statuses = stats.statuses || {};
+  const total = Object.values(statuses).reduce((a,b)=>a+b, 0);
+  const captured = statuses.ACTIONABLE || 0;
+  const tiles = [
+    { n: total, l: 'Captured' },
+    { n: stats.revisit_due || 0, l: 'Due to review', accent: true },
+    { n: stats.learned || 0, l: 'Learned' },
+    { n: stats.logseq ? 'on' : 'off', l: 'Logseq export' },
+  ];
+  document.getElementById('tiles').innerHTML = tiles.map(t =>
+    `<div class="tile ${t.accent?'accent':''}"><div class="n">${esc(t.n)}</div><div class="l">${esc(t.l)}</div></div>`).join('');
+
+  const cats = stats.categories || {};
+  document.getElementById('cats').innerHTML = Object.keys(cats).length
+    ? Object.entries(cats).map(([c,n])=>`<span class="cat">${esc(c)} <b>${n}</b></span>`).join('')
+    : '<span class="empty">No categorized captures yet.</span>';
+
+  document.getElementById('recent').innerHTML = (items||[]).slice(0,8).map(it => `
+    <div class="item">
+      <div class="top">
+        <span class="t">${esc(it.title || it.content_type || 'item')}${it.category?`<span class="catbadge">${esc(it.category)}</span>`:''}</span>
+        <span class="status" style="color:${COLOR[it.status]||'#888'}">${esc(it.status)}</span>
+      </div>
+      ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
+      ${it.summary?`<div class="sum">${esc(it.summary)}</div>`:''}
+    </div>`).join('') || '<div class="empty">No captures yet — send a link to your Telegram bot.</div>';
+
+  document.getElementById('foot').textContent =
+    `${total} items · ${stats.revisit_due||0} due · auto-refresh 10s · full dashboard at /full`;
+}
+
+fetch('/healthz').then(r=>r.json()).then(h=>{ if(h.auth) document.getElementById('logout').style.display='inline'; }).catch(()=>{});
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

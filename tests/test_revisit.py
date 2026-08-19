@@ -148,5 +148,36 @@ dc = revisit.due_count(con)
 con.close()
 check("due_count >= 1", dc >= 1, str(dc))
 
+# --- weekly digest: due_within window + digest timing ---
+from datetime import datetime, timezone, timedelta   # noqa: E402
+
+
+def _set_deadline(iid, days):
+    con = db.connect()
+    dl = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    con.execute("UPDATE items SET deadline=?, learn_status='active' WHERE id=?", (dl, iid))
+    con.commit()
+    con.close()
+
+
+soon = _make_item("https://d/soon"); _set_deadline(soon, 3)     # due in 3 days
+far = _make_item("https://d/far");  _set_deadline(far, 20)      # due in 20 days
+over = _make_item("https://d/over"); _set_deadline(over, -1)    # overdue
+con = db.connect()
+within = {r["id"] for r in revisit.due_within(con, 7)}
+con.close()
+check("due_within(7) includes items due soon + overdue", soon in within and over in within)
+check("due_within(7) excludes far-future items", far not in within)
+
+check("meta get/set roundtrips", (revisit.set_meta("t", "v") or True) and revisit.get_meta("t") == "v")
+con = db.connect(); con.execute("DELETE FROM meta WHERE key='last_digest_sent'"); con.commit(); con.close()
+check("_digest_due seeds on first run and returns False",
+      revisit._digest_due() is False and revisit.get_meta("last_digest_sent"))
+revisit.set_meta("last_digest_sent", db.now())
+check("_digest_due False right after a send", revisit._digest_due() is False)
+old = (datetime.now(timezone.utc) - timedelta(days=config.DIGEST_INTERVAL_DAYS + 1)).strftime("%Y-%m-%d %H:%M:%S")
+revisit.set_meta("last_digest_sent", old)
+check("_digest_due True once the interval has elapsed", revisit._digest_due() is True)
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)
