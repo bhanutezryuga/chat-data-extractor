@@ -69,9 +69,9 @@ coll = [{"id": "c1", "collection": "To-Read", "name": "Thinking in Systems", "no
 md = logseq.render_page(study_item, ex, coll, {"title": "Read these", "tags": '["complexity"]'})
 
 check("render: title property present", "title:: Systems thinking" in md)
-check("render: tags include category + content-type + gemini tag",
-      "tags:: " in md and "Reading" in md.split("tags:: ")[1].split("\n")[0]
-      and "article" in md and "complexity" in md)
+_tagline = md.split("tags:: ")[1].split("\n")[0]
+check("render: tags = category + lowercase topics, no content-type",
+      _tagline.startswith("Reading") and "complexity" in _tagline and "article" not in _tagline)
 for junk in ("item-id::", "url::", "source::", "status::", "captured::", "category::", "revisit-next::", "cid::"):
     check(f"render: NO {junk} clutter", junk not in md)
 check("render: collection heading is a [[page]]", "- ## [[To-Read]]" in md)

@@ -73,21 +73,21 @@ def _is_study(category):
 
 
 def _tags(item, task):
-    """Single-word review tags: the category + content type + Gemini's topic tags. Multi-word
-    tags are hyphenated so each is one token; deduped case-insensitively; capped."""
-    raw = []
-    if item.get("category"):
-        raw.append(item["category"])
-    if item.get("content_type"):
-        raw.append(item["content_type"])
-    raw += _as_list((task or {}).get("tags"))
+    """Review tags grouped by action: the category (kept as the group anchor, e.g. Reading) followed
+    by Gemini's topic tags, normalized to lowercase-hyphenated single tokens so the same concept
+    doesn't fragment into `Book-Recommendation` vs `book-recommendations`. Content-type (reel/post/…)
+    is intentionally excluded as noise."""
     out, seen = [], set()
-    for t in raw:
-        tok = re.sub(r"[^0-9A-Za-z_-]", "", re.sub(r"\s+", "-", str(t).strip())).strip("-")
-        if tok and tok.lower() not in seen:
-            seen.add(tok.lower())
+    cat = (item.get("category") or "").strip()
+    if cat:
+        out.append(cat)
+        seen.add(cat.lower())
+    for t in _as_list((task or {}).get("tags")):
+        tok = re.sub(r"[^0-9a-z-]", "", re.sub(r"\s+", "-", str(t).strip().lower())).strip("-")
+        if tok and tok not in seen:
+            seen.add(tok)
             out.append(tok)
-    return out[:6]
+    return out[:8]
 
 
 def render_page(item, extraction, coll_items, task):
