@@ -152,6 +152,36 @@ def _page_filename(item):
     return f"{_slug(item.get('title') or item.get('content_type') or 'item')}-{item['id'][:8]}.md"
 
 
+def _unique_title(base, my_filename, pages_dir):
+    """Logseq keys a page by its `title::`, so two items with the same title collide ("page already
+    exists"). If another page already claims this title, append ' (2)', ' (3)', … The filename stays
+    keyed to the item id, so this only affects the displayed title and is stable once on disk."""
+    if not base:
+        return base
+    others = set()
+    try:
+        names = os.listdir(pages_dir)
+    except OSError:
+        return base
+    for name in names:
+        if name == my_filename or not name.endswith(".md"):
+            continue
+        try:
+            with open(os.path.join(pages_dir, name), encoding="utf-8", errors="replace") as f:
+                head = f.read(4000)
+        except OSError:
+            continue
+        m = re.search(r"^title::\s*(.+)$", head, re.M)
+        if m:
+            others.add(m.group(1).strip())
+    if base not in others:
+        return base
+    n = 2
+    while f"{base} ({n})" in others:
+        n += 1
+    return f"{base} ({n})"
+
+
 def _atomic_write(path, text):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
@@ -230,8 +260,12 @@ def export_item(item_id):
         coll = [dict(r) for r in con.execute(
             "SELECT * FROM collection_items WHERE item_id=? ORDER BY created_at", (item_id,))]
         con.close()
-        md = render_page(item, dict(ex) if ex else {}, coll, dict(task) if task else {})
-        _write_page(item, md)
+        # keep the filename keyed to the item (stable), but make title:: unique so Logseq
+        # never merges two captures that Gemini happened to give the same title.
+        pages_dir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
+        render_item = {**item, "title": _unique_title(item.get("title"), _page_filename(item), pages_dir)}
+        md = render_page(render_item, dict(ex) if ex else {}, coll, dict(task) if task else {})
+        _write_page(item, md)                       # ORIGINAL item -> stable filename
         if config.LOGSEQ_JOURNAL:
             _write_journal(item)
         return True

@@ -118,6 +118,15 @@ check("journal breadcrumb idempotent", open(jfile, encoding="utf-8").read().coun
 con = db.connect(); n_actionable = con.execute("SELECT count(*) n FROM items WHERE status='ACTIONABLE'").fetchone()["n"]; con.close()
 check("export_all exports every ACTIONABLE item", logseq.export_all() == n_actionable and n_actionable >= 1)
 
+# ---------- duplicate title:: disambiguation (prevents Logseq "page already exists") ----------
+_udir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
+open(os.path.join(_udir, "utitle-aaaaaaaa.md"), "w", encoding="utf-8").write("title:: Unique Test Title\n")
+check("_unique_title: collision -> ' (2)'",
+      logseq._unique_title("Unique Test Title", "utitle-bbbbbbbb.md", _udir) == "Unique Test Title (2)")
+check("_unique_title: no collision -> base", logseq._unique_title("Totally Fresh XYZ", "x.md", _udir) == "Totally Fresh XYZ")
+check("_unique_title: the item's own file is ignored",
+      logseq._unique_title("Unique Test Title", "utitle-aaaaaaaa.md", _udir) == "Unique Test Title")
+
 # ---------- reprocess preserves collection done + row id (DB-level) ----------
 iid3 = _seed_item(category="Learning")
 con = db.connect()
