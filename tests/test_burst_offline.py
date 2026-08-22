@@ -14,6 +14,7 @@ _TMP = tempfile.mkdtemp(prefix="cde_test_")
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["GEMINI_API_KEY"] = ""        # force offline stub: instant, no network/cost
 os.environ["TELEGRAM_BOT_TOKEN"] = ""    # no real poller
+os.environ["LOGSEQ_GRAPH_DIR"] = ""      # NEVER write to a real graph from tests (isolate from .env)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import config, db, pipeline   # noqa: E402

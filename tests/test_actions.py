@@ -12,6 +12,7 @@ _TMP = tempfile.mkdtemp(prefix="cde_actions_")
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["GEMINI_API_KEY"] = ""        # stub mode
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
+os.environ["LOGSEQ_GRAPH_DIR"] = ""       # NEVER write to a real graph from tests (isolate from .env)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import db, gemini, pipeline, config   # noqa: E402

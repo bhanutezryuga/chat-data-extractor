@@ -66,26 +66,44 @@ def _scheduled(date):
 NOTES_MARKER = "- ## Notes"
 
 
+def _is_study(category):
+    """Study items (things you work through to learn) get TODO markers; everything else
+    (songs, recipes, videos to watch…) is written as a plain reference bullet."""
+    return (category or "") in config.LOGSEQ_TODO_CATEGORIES
+
+
+def _tags(item, task):
+    """Single-word review tags: the category + content type + Gemini's topic tags. Multi-word
+    tags are hyphenated so each is one token; deduped case-insensitively; capped."""
+    raw = []
+    if item.get("category"):
+        raw.append(item["category"])
+    if item.get("content_type"):
+        raw.append(item["content_type"])
+    raw += _as_list((task or {}).get("tags"))
+    out, seen = [], set()
+    for t in raw:
+        tok = re.sub(r"[^0-9A-Za-z_-]", "", re.sub(r"\s+", "-", str(t).strip())).strip("-")
+        if tok and tok.lower() not in seen:
+            seen.add(tok.lower())
+            out.append(tok)
+    return out[:6]
+
+
 def render_page(item, extraction, coll_items, task):
     """Item (+ latest extraction/task/collection rows) -> Logseq Markdown. Pure."""
     ex = extraction or {}
     active_learn = (item.get("learn_status") or "active") == "active"
     scheduled = active_learn and item.get("deadline")
+    study = _is_study(item.get("category"))
 
-    # page properties block (top of file, no bullet)
-    props = [_prop("item-id", item["id"])]
+    # page properties block (top of file, no bullet) — kept minimal: just title + review tags
+    props = []
     if item.get("title"):
         props.append(_prop("title", _oneline(item["title"])))
-    if item.get("category"):
-        props.append(_prop("category", f"[[{item['category']}]]"))
-    if item.get("source"):
-        props.append(_prop("source", item["source"]))
-    if item.get("raw_url"):
-        props.append(_prop("url", item["raw_url"]))
-    props.append(_prop("captured", f"[[{(item.get('created_at') or db.now())[:10]}]]"))
-    props.append(_prop("status", item.get("learn_status") or "active"))
-    if scheduled:
-        props.append(_prop("revisit-next", f"[[{item['deadline'][:10]}]]"))
+    tags = _tags(item, task)
+    if tags:
+        props.append(_prop("tags", ", ".join(tags)))
 
     blocks = []
     if ex.get("summary"):
@@ -100,24 +118,27 @@ def render_page(item, extraction, coll_items, task):
         coll = coll_items[0]["collection"]
         lines = [f"- ## [[{coll}]]"]
         for c in coll_items:
-            marker = "DONE" if c.get("done") else "TODO"
             txt = _oneline(c["name"]) + (f" — {_oneline(c['note'])}" if c.get("note") else "")
-            lines.append(f"\t- {marker} {txt}")
-            lines.append(f"\t  cid:: {c['id']}")          # links this block back to collection_items
+            if study:
+                lines.append(f"\t- {'DONE' if c.get('done') else 'TODO'} {txt}")
+            else:
+                lines.append(f"\t- {txt}")               # reference bullet, no TODO
             if c.get("link"):
                 lines.append(f"\t  link:: {c['link']}")
         blocks.append("\n".join(lines))
 
-    if task and task.get("title"):
+    # TODO is reserved for study items; a song/recipe just gets its content, no task to "do".
+    if study and task and task.get("title"):
         blocks.append(_section("## Task", [f"TODO {task['title']}"]))
 
-    if scheduled:  # a scheduled TODO so due items also surface in Logseq's agenda
+    if scheduled and study:  # a scheduled TODO so study items surface in Logseq's agenda
         label = _oneline(item.get("title") or item.get("content_type") or "item")
         blocks.append(f"- TODO Revisit — {label}\n  {_scheduled(item['deadline'][:10])}")
 
     blocks.append(f"{NOTES_MARKER}\n\t-")            # USER-owned area, preserved on re-export
 
-    return "\n".join(props) + "\n\n" + "\n".join(blocks) + "\n"
+    header = "\n".join(props)
+    return (header + "\n\n" if header else "") + "\n".join(blocks) + "\n"
 
 
 # ---- I/O ------------------------------------------------------------------
@@ -211,7 +232,8 @@ def export_item(item_id):
         con.close()
         md = render_page(item, dict(ex) if ex else {}, coll, dict(task) if task else {})
         _write_page(item, md)
-        _write_journal(item)
+        if config.LOGSEQ_JOURNAL:
+            _write_journal(item)
         return True
     except Exception as e:
         print(f"  [logseq] export failed for {item_id}: {e}")
@@ -223,31 +245,22 @@ def export_item(item_id):
 # edits we read back are the checkbox done-state and a completion status. Anything the app owns
 # (summary/task/schedule) is ignored on read-back. See docs/LOGSEQ_PLAN.md for the conflict policy.
 
-_TASK_RE = re.compile(r"-\s+(TODO|DOING|NOW|LATER|DONE|CANCELED|CANCELLED)\b")
-
-
 def parse_page(text):
-    """Extract the read-back-relevant bits from a page: item id, page status, and the done-state
-    of each collection block (keyed by its `cid::`). Pure — no I/O."""
+    """Extract the read-back-relevant bits from a page: item id and page status. Pure — no I/O."""
     item_id = status = None
-    coll = {}
-    cur_done = None                      # done-state of the most recent task bullet
     for ln in text.splitlines():
         s = ln.strip()
-        if s.startswith("- "):
-            m = _TASK_RE.match(s)
-            cur_done = (m.group(1) == "DONE") if m else None
-        elif s.startswith("item-id::") and item_id is None:
+        if s.startswith("item-id::") and item_id is None:
             item_id = s.split("::", 1)[1].strip()
         elif s.startswith("status::") and status is None:
             status = s.split("::", 1)[1].strip().strip("[]")
-        elif s.startswith("cid::") and cur_done is not None:
-            coll[s.split("::", 1)[1].strip()] = cur_done
-    return {"item_id": item_id, "status": status, "coll": coll}
+    return {"item_id": item_id, "status": status}
 
 
 def _apply(parsed):
-    """Apply parsed user-edits to the DB. Returns (done_changes, status_changes)."""
+    """Apply parsed user-edits to the DB. Returns (done_changes, status_changes).
+    Only the page `status::` is read back (mark learned/archived in Logseq to stop reviews);
+    done_changes stays 0 (per-item checkbox sync was removed with the cid:: keys)."""
     if not parsed["item_id"]:
         return (0, 0)
     con = db.connect()
@@ -256,12 +269,6 @@ def _apply(parsed):
         con.close()
         return (0, 0)
     dchg = 0
-    for cid, done in parsed["coll"].items():
-        cur = con.execute("SELECT done FROM collection_items WHERE id=? AND item_id=?",
-                          (cid, it["id"])).fetchone()
-        if cur is not None and bool(cur["done"]) != done:
-            con.execute("UPDATE collection_items SET done=? WHERE id=?", (1 if done else 0, cid))
-            dchg += 1
     # Completion-only status read-back: user may mark learned/archived in Logseq; never revert to
     # active from a (possibly stale) file — un-archiving is done in the app.
     schg = 0

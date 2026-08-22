@@ -32,9 +32,10 @@ def main():
     else:
         print("  [telegram] no TELEGRAM_BOT_TOKEN — Telegram disabled (web + manual add still work)")
 
-    # Logseq two-way sync: read user edits (checkboxes, learned) back into the DB
+    # Logseq: one-way export (capture -> graph). Read-back watcher is intentionally not started
+    # (pages carry no machine keys anymore); the code stays in app/logseq.py for future use.
     if logseq.active():
-        logseq.start_watcher()
+        print(f"  [logseq] export on -> {config.LOGSEQ_GRAPH_DIR}")
     else:
         print("  [logseq] export off (set LOGSEQ_GRAPH_DIR to enable)")
 

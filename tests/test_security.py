@@ -6,6 +6,7 @@ import tempfile
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(prefix="cde_sec_"), "t.db")
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
+os.environ["LOGSEQ_GRAPH_DIR"] = ""       # NEVER write to a real graph from tests (isolate from .env)
 os.environ["APP_PASSWORD"] = "s3cret-pw"
 os.environ["SESSION_SECRET"] = "unit-test-secret"
 os.environ["TELEGRAM_ALLOWED_CHAT_IDS"] = "111,222"

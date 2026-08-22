@@ -64,9 +64,14 @@ DIGEST_INTERVAL_DAYS  = int(os.environ.get("DIGEST_INTERVAL_DAYS", "7"))    # ho
 DIGEST_LOOKAHEAD_DAYS = int(os.environ.get("DIGEST_LOOKAHEAD_DAYS", "7"))   # include items due within this window (+ overdue)
 
 # --- Logseq knowledge-base export (see docs/LOGSEQ_PLAN.md). Off unless a graph dir is set. ---
-LOGSEQ_GRAPH_DIR    = os.environ.get("LOGSEQ_GRAPH_DIR", "").strip()        # path to your Logseq graph folder
+LOGSEQ_GRAPH_DIR    = os.environ.get("LOGSEQ_GRAPH_DIR", "").strip()        # path to your Logseq graph *root* (contains pages/ journals/)
 LOGSEQ_ENABLED      = os.environ.get("LOGSEQ_ENABLED", "1") == "1"
+LOGSEQ_JOURNAL      = os.environ.get("LOGSEQ_JOURNAL", "1") == "1"          # also drop a "Captured …" breadcrumb in the daily journal
 LOGSEQ_SYNC_SECONDS = int(os.environ.get("LOGSEQ_SYNC_SECONDS", "60"))      # (Phase 2) read-back poll interval
+# Only these categories render as TODO items in Logseq (things you actively study/work through);
+# everything else (songs, recipes, videos to watch…) is written as a plain reference bullet.
+LOGSEQ_TODO_CATEGORIES = {c.strip() for c in
+                          os.environ.get("LOGSEQ_TODO_CATEGORIES", "Learning,Reading").split(",") if c.strip()}
 
 # --- Security (required before exposing to the internet) ---
 APP_PASSWORD   = os.environ.get("APP_PASSWORD", "").strip()                # set this to require login (and to allow non-localhost binding)
