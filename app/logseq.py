@@ -205,7 +205,17 @@ def _merge_notes(new_md, old_text):
 def _write_page(item, md):
     pages = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
     os.makedirs(pages, exist_ok=True)
-    path = os.path.join(pages, _page_filename(item))
+    fname = _page_filename(item)
+    path = os.path.join(pages, fname)
+    # remove any stale page for this same item (the filename slug changes if Gemini re-titles it
+    # on reprocess) so re-titling never leaves an orphan duplicate behind.
+    suffix = f"-{item['id'][:8]}.md"
+    for name in os.listdir(pages):
+        if name.endswith(suffix) and name != fname:
+            try:
+                os.remove(os.path.join(pages, name))
+            except OSError:
+                pass
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             md = _merge_notes(md, f.read())
@@ -227,6 +237,25 @@ def _write_journal(item):
     line = f"- Captured {link}" + (f" #{item['category']}" if item.get("category") else "") + "\n"
     with open(path, "a", encoding="utf-8", newline="\n") as f:
         f.write(line)
+
+
+_NO_CONTENT_PHRASES = ("no content was provided", "content not provided", "no content provided",
+                       "not provided in the prompt", "unable to extract", "unable to summarize",
+                       "cannot summarize", "please provide the", "no information was provided")
+
+
+def _has_content(ex):
+    """False when the extraction is essentially a 'could not read the content' result — we don't
+    make a Logseq page for those (nothing to record). A real list of items always counts."""
+    if not ex:
+        return False
+    if _as_list(ex.get("list_items")):
+        return True
+    summ = (ex.get("summary") or "").strip()
+    if len(summ) < 20:
+        return False
+    blob = (summ + " " + " ".join(str(x) for x in _as_list(ex.get("key_points")))).lower()
+    return not any(p in blob for p in _NO_CONTENT_PHRASES)
 
 
 def export_all():
@@ -260,6 +289,8 @@ def export_item(item_id):
         coll = [dict(r) for r in con.execute(
             "SELECT * FROM collection_items WHERE item_id=? ORDER BY created_at", (item_id,))]
         con.close()
+        if not _has_content(dict(ex) if ex else {}):
+            return False                            # nothing was extracted -> don't make a page
         # keep the filename keyed to the item (stable), but make title:: unique so Logseq
         # never merges two captures that Gemini happened to give the same title.
         pages_dir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")

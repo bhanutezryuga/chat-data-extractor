@@ -278,10 +278,10 @@ def handle_update(u):
         for i, url in enumerate(urls):
             r = pipeline.create_pending(raw_url=url, raw_text=text,
                                         source_chat_id=str(chat_id), source_msg_id=f"new{msg_id}:{i}")
-            if r:
+            if r and r.get("status") == "AWAITING_ACTION":
                 send_message(chat_id, f"🆕 What should I do with this?\n{url}", _new_kbd(r["id"]))
             else:
-                send_message(chat_id, "Already saved that one.")
+                send_message(chat_id, "🔁 Already saved that link — skipping.")
         return
 
     results = []
@@ -310,7 +310,9 @@ def handle_update(u):
         if not r:
             continue
         sent = True
-        if r["status"] == "ACTIONABLE":
+        if r["status"] == "DUPLICATE":
+            send_message(chat_id, "🔁 Already saved that link — skipping.")
+        elif r["status"] == "ACTIONABLE":
             text_out, kbd = _format_result(r["id"])
             send_message(chat_id, text_out or "✅ done", kbd)
         else:

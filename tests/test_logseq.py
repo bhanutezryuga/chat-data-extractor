@@ -36,7 +36,7 @@ def _seed_item(url="https://x.com/i", category="Learning"):
                 "VALUES (?,?,?,?,?,?,?)", (iid, config.USER_ID, url, "post", "ACTIONABLE", db.now(), db.now()))
     con.execute("INSERT INTO extractions (id,item_id,summary,key_points,list_items,created_at) "
                 "VALUES (?,?,?,?,?,?)",
-                (db.new_id(), iid, "A summary.", '["p1","p2"]', "[]", db.now()))
+                (db.new_id(), iid, "A concise but real summary of the captured item.", '["p1","p2"]', "[]", db.now()))
     con.commit()
     con.close()
     data = {"title": "Best keyboards 2026", "category": category,
@@ -126,6 +126,34 @@ check("_unique_title: collision -> ' (2)'",
 check("_unique_title: no collision -> base", logseq._unique_title("Totally Fresh XYZ", "x.md", _udir) == "Totally Fresh XYZ")
 check("_unique_title: the item's own file is ignored",
       logseq._unique_title("Unique Test Title", "utitle-aaaaaaaa.md", _udir) == "Unique Test Title")
+
+# ---------- content gate: don't export items with no extracted content ----------
+check("_has_content: real summary -> True", logseq._has_content({"summary": "A meaningful summary of the article about vector databases."}))
+check("_has_content: 'no content' refusal -> False",
+      not logseq._has_content({"summary": "No content was provided in the prompt to summarize.",
+                               "key_points": '["Unable to extract key points as no content was provided."]'}))
+check("_has_content: empty -> False", not logseq._has_content({}))
+check("_has_content: list_items make it exportable", logseq._has_content({"summary": "", "list_items": '[{"name":"x"}]'}))
+_junk = db.new_id()
+con = db.connect()
+con.execute("INSERT INTO items (id,user_id,raw_url,status,category,title,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (_junk, config.USER_ID, "http://x", "ACTIONABLE", "Other", "Content Not Provided", db.now(), db.now()))
+con.execute("INSERT INTO extractions (id,item_id,summary,key_points,list_items,created_at) VALUES (?,?,?,?,?,?)",
+            (db.new_id(), _junk, "No content was provided in the prompt.",
+             '["Unable to extract key points as no content was provided."]', "[]", db.now()))
+con.commit(); con.close()
+check("export_item skips a content-less item (no page)",
+      logseq.export_item(_junk) is False and not os.path.exists(_page_path(_junk)))
+
+# ---------- re-titling on reprocess must not orphan the old page ----------
+rt = _seed_item(category="Learning")
+logseq.export_item(rt)
+con = db.connect(); con.execute("UPDATE items SET title=? WHERE id=?", ("Totally New Title", rt)); con.commit(); con.close()
+logseq.export_item(rt)
+_pdir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
+_matches = [n for n in os.listdir(_pdir) if n.endswith(f"-{rt[:8]}.md")]
+check("re-title leaves exactly one page (no orphan)",
+      len(_matches) == 1 and _matches[0].startswith("totally-new-title"), str(_matches))
 
 # ---------- reprocess preserves collection done + row id (DB-level) ----------
 iid3 = _seed_item(category="Learning")

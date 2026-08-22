@@ -9,7 +9,7 @@ Expensive video calls are skipped when the daily Gemini budget is reached.
 import json
 import re
 import sqlite3
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 from . import config, db, gemini, instagram, logseq, media, revisit, usage
 from .rules import classify
@@ -21,6 +21,38 @@ VIDEO_TYPES = ("reel", "short", "video")
 
 def extract_urls(text):
     return URL_RE.findall(text or "")
+
+
+# Tracking/junk query params to ignore when deciding if two links are "the same".
+_DROP_PARAMS = {"igsh", "igshid", "utm_source", "utm_medium", "utm_campaign", "utm_term",
+                "utm_content", "fbclid", "gclid", "si", "ref", "ref_src", "feature"}
+
+
+def _norm_url(u):
+    """Normalize a URL for dedup: lowercase host, drop tracking params + fragment + trailing slash
+    (so the same reel/article pasted with different share tokens is recognized as one)."""
+    u = (u or "").strip()
+    try:
+        p = urlparse(u)
+        if not p.scheme:
+            return u.lower().rstrip("/")
+        q = urlencode([(k, v) for k, v in parse_qsl(p.query) if k.lower() not in _DROP_PARAMS])
+        return urlunparse((p.scheme.lower(), p.netloc.lower(), p.path.rstrip("/") or "/", "", q, ""))
+    except Exception:
+        return u.lower().rstrip("/")
+
+
+def find_duplicate(con, user_id, url):
+    """Return an existing item row with the same normalized URL, or None — so the same link pasted
+    again is neither re-saved nor re-processed."""
+    n = _norm_url(url)
+    if not n:
+        return None
+    for r in con.execute("SELECT id, content_type, raw_url FROM items "
+                         "WHERE user_id=? AND raw_url IS NOT NULL", (user_id,)):
+        if _norm_url(r["raw_url"]) == n:
+            return r
+    return None
 
 
 def has_signal(text):
@@ -310,6 +342,12 @@ def ingest(raw_url=None, raw_text=None, attachment=None,
     con = db.connect()
     item_id = db.new_id()
     url = raw_url or (attachment or {}).get("filename")
+    if raw_url:
+        dup = find_duplicate(con, config.USER_ID, raw_url)
+        if dup:
+            con.close()
+            return {"id": dup["id"], "content_type": dup["content_type"],
+                    "status": "DUPLICATE", "task": None}   # same link already saved
     try:
         con.execute(
             "INSERT INTO items (id,user_id,source_chat_id,source_msg_id,raw_text,raw_url,status,created_at,updated_at)"
@@ -371,6 +409,11 @@ def create_pending(raw_url=None, raw_text=None, source_chat_id=None, source_msg_
     """Save a link WITHOUT processing it (the 'new <link>' command). Returns {id} or None (dup)."""
     con = db.connect()
     item_id = db.new_id()
+    if raw_url:
+        dup = find_duplicate(con, config.USER_ID, raw_url)
+        if dup:
+            con.close()
+            return {"id": dup["id"], "status": "DUPLICATE"}   # same link already saved
     try:
         con.execute(
             "INSERT INTO items (id,user_id,source_chat_id,source_msg_id,raw_text,raw_url,status,created_at,updated_at)"

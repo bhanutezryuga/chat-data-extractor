@@ -67,7 +67,8 @@ check("B. same link x5 at once -> exactly 1 item (dedup)", n_items("B") == 1, f"
 r1 = pipeline.ingest(raw_url="xtest://C/1", raw_text="x", source_chat_id="C", source_msg_id="1")
 r2 = pipeline.ingest(raw_url="xtest://C/1", raw_text="x", source_chat_id="C", source_msg_id="1")  # redelivery
 check("C. offline re-delivery of same msg -> not duplicated",
-      r1 is not None and r2 is None, f"first={'created' if r1 else None}, redelivery={'dup!' if r2 else 'skipped'}")
+      r1 is not None and (r2 is None or r2.get("status") == "DUPLICATE"),
+      f"first={'created' if r1 else None}, redelivery={(r2 or {}).get('status') or 'skipped'}")
 
 # C2. A genuinely NEW buffered message (different id) IS processed on restart
 r3 = pipeline.ingest(raw_url="xtest://C/2", raw_text="x", source_chat_id="C", source_msg_id="2")
@@ -81,6 +82,16 @@ for i, u in enumerate(urls):
     pipeline.ingest(raw_url=f"xtest://D/{i}", raw_text=text, source_chat_id="D", source_msg_id=f"99:{i}")
 check("D. one message, 3 links -> 3 distinct items", len(urls) == 3 and n_items("D") == 3,
       f"extracted {len(urls)} urls, {n_items('D')} items")
+
+# H. the SAME url pasted again (different message, different tracking token) -> deduped
+h1 = pipeline.ingest(raw_url="xtest://H/song?igsh=AAA", raw_text="x", source_chat_id="H", source_msg_id="h1")
+h2 = pipeline.ingest(raw_url="xtest://H/song?igsh=BBB", raw_text="x", source_chat_id="H", source_msg_id="h2")
+h3 = pipeline.ingest(raw_url="xtest://H/other", raw_text="x", source_chat_id="H", source_msg_id="h3")
+check("H. same url re-paste -> DUPLICATE, not re-saved",
+      h1 and h1.get("status") != "DUPLICATE" and h2 and h2["status"] == "DUPLICATE" and n_items("H") == 2,
+      f"h2={(h2 or {}).get('status')}, items={n_items('H')}")
+check("H. _norm_url strips tracking tokens + trailing slash",
+      pipeline._norm_url("https://insta.com/reel/AB/?igsh=X") == pipeline._norm_url("https://insta.com/reel/AB"))
 
 # E. GAP CHECK: an item left PROCESSING by a crash is NOT auto-recovered on restart
 con = db.connect()
