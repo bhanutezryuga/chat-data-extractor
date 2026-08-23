@@ -103,11 +103,15 @@ def render_page(item, extraction, coll_items, task):
         props.append(_prop("tags", ", ".join(tags)))
 
     blocks = []
-    if ex.get("summary"):
-        blocks.append(_section("## Summary", [ex["summary"]]))
-    kps = _as_list(ex.get("key_points"))
-    if kps:
-        blocks.append(_section("## Key points", kps))
+    # For list/recommendation captures the collection bullets ARE the content — a Summary and
+    # Key points would just restate the list — so we omit both when the page carries a list.
+    # Long-form captures (no list) still get them.
+    if not coll_items:
+        if ex.get("summary"):
+            blocks.append(_section("## Summary", [ex["summary"]]))
+        kps = _as_list(ex.get("key_points"))
+        if kps:
+            blocks.append(_section("## Key points", kps))
     if (ex.get("translation") or "").strip():
         blocks.append(_section("## Translation", [ex["translation"]]))
 
