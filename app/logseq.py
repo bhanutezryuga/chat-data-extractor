@@ -204,15 +204,19 @@ def _merge_notes(new_md, old_text):
 
 
 def _write_page(item, md):
+    """Write the item's page. Returns True if this created a NEW page, False if it overwrote an
+    existing one (a page already on disk for this item, under its current or a previous title)."""
     pages = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
     os.makedirs(pages, exist_ok=True)
     fname = _page_filename(item)
     path = os.path.join(pages, fname)
+    existed = os.path.exists(path)
     # remove any stale page for this same item (the filename slug changes if Gemini re-titles it
     # on reprocess) so re-titling never leaves an orphan duplicate behind.
     suffix = f"-{item['id'][:8]}.md"
     for name in os.listdir(pages):
         if name.endswith(suffix) and name != fname:
+            existed = True                          # already had a page (under an older title)
             try:
                 os.remove(os.path.join(pages, name))
             except OSError:
@@ -221,7 +225,7 @@ def _write_page(item, md):
         with open(path, encoding="utf-8") as f:
             md = _merge_notes(md, f.read())
     _atomic_write(path, md)
-    return path
+    return not existed
 
 
 def _write_journal(item):
@@ -260,20 +264,22 @@ def _has_content(ex):
 
 
 def export_all():
-    """Export every processed (ACTIONABLE) item to Logseq — for backfilling a graph after
-    enabling the feature. Returns the count written. No-op (0) if disabled."""
+    """Re-export every processed (ACTIONABLE) item to Logseq. Returns the number of pages this run
+    NEWLY created (items not already in the graph) — not the running total, so a repeat export of an
+    up-to-date graph returns 0. No-op (0) if disabled."""
     if not active():
         return 0
     con = db.connect()
     ids = [r["id"] for r in con.execute(
         "SELECT id FROM items WHERE status='ACTIONABLE' ORDER BY created_at")]
     con.close()
-    return sum(1 for iid in ids if export_item(iid))
+    return sum(1 for iid in ids if export_item(iid) == "created")
 
 
 def export_item(item_id):
-    """Render + write one item's Logseq page and journal breadcrumb. No-op if disabled;
-    never raises into the pipeline (a Logseq problem must not fail a capture)."""
+    """Render + write one item's Logseq page and journal breadcrumb. Returns 'created' (new page),
+    'updated' (overwrote an existing one), or False (disabled / skipped / no content / error).
+    Never raises into the pipeline (a Logseq problem must not fail a capture)."""
     if not active():
         return False
     try:
@@ -297,10 +303,10 @@ def export_item(item_id):
         pages_dir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
         render_item = {**item, "title": _unique_title(item.get("title"), _page_filename(item), pages_dir)}
         md = render_page(render_item, dict(ex) if ex else {}, coll, dict(task) if task else {})
-        _write_page(item, md)                       # ORIGINAL item -> stable filename
+        created = _write_page(item, md)             # ORIGINAL item -> stable filename
         if config.LOGSEQ_JOURNAL:
             _write_journal(item)
-        return True
+        return "created" if created else "updated"
     except Exception as e:
         print(f"  [logseq] export failed for {item_id}: {e}")
         return False
