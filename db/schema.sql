@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS items (
   learn_status   TEXT NOT NULL DEFAULT 'active', -- active|learned|archived
   progress       INTEGER NOT NULL DEFAULT 0,     -- 0..100
   reminded_at    TEXT,
+  content_key    TEXT,                           -- fingerprint of the extracted content, for cross-URL dedup
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (source_chat_id, source_msg_id)

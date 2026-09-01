@@ -6,6 +6,7 @@ v1: description-first. v2: if a reel/short/video has no usable description, anal
 video with Gemini multimodal (YouTube by URL; Instagram/TikTok via yt-dlp if installed).
 Expensive video calls are skipped when the daily Gemini budget is reached.
 """
+import hashlib
 import json
 import re
 import sqlite3
@@ -55,6 +56,51 @@ def find_duplicate(con, user_id, url):
     return None
 
 
+_NORM_RE = re.compile(r"[^0-9a-z]+")
+
+
+def _norm_name(s):
+    return _NORM_RE.sub(" ", str(s or "").lower()).strip()
+
+
+def content_fingerprint(data, category):
+    """A stable key for the *content* of a capture, so the same material saved from a different
+    URL (a reshared reel, a repost) is recognized as a duplicate even though URL-dedup can't see it.
+    For list/recommendation captures the identity is the set of item names; otherwise it's the
+    title. Category-scoped so two unrelated lists don't collide. Returns None when there's too
+    little to dedup on safely."""
+    names = []
+    for x in (data.get("list_items") or []):
+        nm = _norm_name(x.get("name") if isinstance(x, dict) else x)
+        if nm:
+            names.append(nm)
+    if names:
+        basis = "list:" + "|".join(sorted(set(names)))
+    else:
+        title = _norm_name(data.get("title") or (data.get("task") or {}).get("title"))
+        if len(title) < 6:                              # too thin to dedup on safely
+            return None
+        basis = "title:" + title
+    basis = _norm_name(category) + "::" + basis
+    return hashlib.sha1(basis.encode("utf-8")).hexdigest()
+
+
+def _find_content_dup(con, item_id, fp):
+    """The earliest ACTIONABLE item with the same content fingerprint (the original this capture
+    duplicates), or None. Duplicates always point at the original, never at each other."""
+    if not fp:
+        return None
+    row = con.execute(
+        "SELECT id FROM items WHERE content_key=? AND id!=? AND status='ACTIONABLE' "
+        "ORDER BY created_at LIMIT 1", (fp, item_id)).fetchone()
+    return row["id"] if row else None
+
+
+def _dup_result(item_id, rule, dup_of):
+    return {"id": item_id, "content_type": rule["content_type"] if rule else None,
+            "status": "DUPLICATE", "task": None, "duplicate_of": dup_of}
+
+
 def has_signal(text):
     if not text or len(text) < config.MIN_SIGNAL:
         return False
@@ -91,9 +137,12 @@ def _write_result(con, item_id, rule, meta, data, kind):
          json.dumps(t.get("tags", [])), db.now(), db.now()))
     _set_status(con, item_id, "ACTIONABLE", rule, data.get("confidence", 0.5))
     con.execute("UPDATE items SET action=? WHERE id=?", (_decide_action(data), item_id))
-    _write_knowledge(con, item_id, data)
+    dup_of = _write_knowledge(con, item_id, data)
     db.log(con, item_id, "generate_task", "ok", t.get("title", ""))
+    if dup_of:
+        return dup_of                 # a content duplicate — no Logseq page (see _write_knowledge)
     logseq.export_item(item_id)   # post-commit (db.log committed above); no-op unless configured
+    return None
 
 
 def _domain(url):
@@ -116,16 +165,28 @@ def _valid_category(con, name):
 
 
 def _write_knowledge(con, item_id, data):
-    """Turn a processed item into a knowledge record: title, source domain, category,
-    priority, a spaced-repetition schedule, and materialized collection items."""
+    """Turn a processed item into a knowledge record: title, source domain, category, priority,
+    a spaced-repetition schedule, and materialized collection items. Returns the id of an existing
+    item this one duplicates (same content from a different URL), or None."""
     it = con.execute("SELECT raw_url FROM items WHERE id=?", (item_id,)).fetchone()
     url = it["raw_url"] if it else None
     task = data.get("task") or {}
     title = (data.get("title") or task.get("title") or "").strip()[:200] or None
     category, collection = _valid_category(con, data.get("category"))
     priority = (task.get("priority") or "MEDIUM").upper()
-    con.execute("UPDATE items SET title=?, source=?, category=?, priority=? WHERE id=?",
-                (title, _domain(url), category, priority, item_id))
+    fp = content_fingerprint(data, category)
+    con.execute("UPDATE items SET title=?, source=?, category=?, priority=?, content_key=? WHERE id=?",
+                (title, _domain(url), category, priority, fp, item_id))
+
+    dup_of = _find_content_dup(con, item_id, fp)
+    if dup_of:
+        # Same material already captured (typically the same reel reshared under a new URL). Keep
+        # this row as a lightweight tombstone so re-sends are cheap to detect, but don't duplicate
+        # the knowledge: no collection rows, no revisit schedule, and no second Logseq page.
+        con.execute("DELETE FROM collection_items WHERE item_id=?", (item_id,))
+        con.execute("UPDATE items SET status='DUPLICATE', deadline=NULL WHERE id=?", (item_id,))
+        db.log(con, item_id, "dedup", "ok", f"content duplicate of {dup_of}")
+        return dup_of
 
     # Rebuild the collection, but preserve the user's checked-off state — and reuse the same row
     # id, so the Logseq `cid::` links don't churn — across a reprocess, matched by name.
@@ -150,6 +211,7 @@ def _write_knowledge(con, item_id, data):
                 (cid, config.USER_ID, item_id, collection, name[:300], note, link, done, db.now()))
 
     revisit.schedule_new(con, item_id)
+    return None
 
 
 def _decide_action(data):
@@ -212,9 +274,11 @@ def _run_text_extraction(con, item_id, rule, url, text, pdf_bytes):
         db.log(con, item_id, "extract", "error", str(e))
         con.commit()
         return _result(item_id, rule, "FAILED")
-    _write_result(con, item_id, rule, {"text_len": len(text or "")}, data,
-                  "pdf" if pdf_bytes else "text")
+    dup_of = _write_result(con, item_id, rule, {"text_len": len(text or "")}, data,
+                           "pdf" if pdf_bytes else "text")
     con.commit()
+    if dup_of:
+        return _dup_result(item_id, rule, dup_of)
     return _result(item_id, rule, "ACTIONABLE", (data.get("task") or {}).get("title"))
 
 
@@ -246,8 +310,10 @@ def _run_video_analysis(con, item_id, rule, url):
                 try:
                     data = gemini.analyze_video(rule, url, video_bytes=blob)
                     db.log(con, item_id, "extract", "ok", "video via download (YouTube fallback)")
-                    _write_result(con, item_id, rule, {"source": "gemini_video"}, data, "video")
+                    dup_of = _write_result(con, item_id, rule, {"source": "gemini_video"}, data, "video")
                     con.commit()
+                    if dup_of:
+                        return _dup_result(item_id, rule, dup_of)
                     return _result(item_id, rule, "ACTIONABLE", (data.get("task") or {}).get("title"))
                 except Exception as e2:
                     e = e2
@@ -255,8 +321,10 @@ def _run_video_analysis(con, item_id, rule, url):
         db.log(con, item_id, "extract", "error", str(e))
         con.commit()
         return _result(item_id, rule, "FAILED")
-    _write_result(con, item_id, rule, {"source": "gemini_video"}, data, "video")
+    dup_of = _write_result(con, item_id, rule, {"source": "gemini_video"}, data, "video")
     con.commit()
+    if dup_of:
+        return _dup_result(item_id, rule, dup_of)
     return _result(item_id, rule, "ACTIONABLE", (data.get("task") or {}).get("title"))
 
 
@@ -289,16 +357,20 @@ def _run_instagram(con, item_id, rule, url, caption_text):
             if imgs:
                 data = gemini.analyze_images(rule, url, imgs, caption)
                 db.log(con, item_id, "extract", "ok", f"vision on {len(imgs)} image(s)")
-                _write_result(con, item_id, rule, {"source": "gemini_image", "images": len(imgs)},
-                              data, "image")
+                dup_of = _write_result(con, item_id, rule, {"source": "gemini_image", "images": len(imgs)},
+                                       data, "image")
                 con.commit()
+                if dup_of:
+                    return _dup_result(item_id, rule, dup_of)
                 return _result(item_id, rule, "ACTIONABLE", (data.get("task") or {}).get("title"))
         if info.get("videos"):
             blob = instagram.download(info["videos"][0], limit=config.MAX_VIDEO_MB * 1_000_000)
             data = gemini.analyze_video(rule, url, video_bytes=blob)
             db.log(con, item_id, "extract", "ok", f"video via instagram api ({len(blob)//1024} KB)")
-            _write_result(con, item_id, rule, {"source": "gemini_video"}, data, "video")
+            dup_of = _write_result(con, item_id, rule, {"source": "gemini_video"}, data, "video")
             con.commit()
+            if dup_of:
+                return _dup_result(item_id, rule, dup_of)
             return _result(item_id, rule, "ACTIONABLE", (data.get("task") or {}).get("title"))
     except Exception as e:
         _set_status(con, item_id, "FAILED")
