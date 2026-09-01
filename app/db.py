@@ -36,6 +36,8 @@ def init():
         con.execute("ALTER TABLE extractions ADD COLUMN translation TEXT")
     if "detected_language" not in ex_cols:
         con.execute("ALTER TABLE extractions ADD COLUMN detected_language TEXT")
+    if "recipe" not in ex_cols:
+        con.execute("ALTER TABLE extractions ADD COLUMN recipe TEXT")
     it_cols = {r[1] for r in con.execute("PRAGMA table_info(items)").fetchall()}
     if "action" not in it_cols:
         con.execute("ALTER TABLE items ADD COLUMN action TEXT")

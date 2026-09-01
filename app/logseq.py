@@ -40,6 +40,19 @@ def _as_list(v):
         return [str(v)]
 
 
+def _recipe(v):
+    """Parse the stored recipe JSON (str or dict) into a dict; {} when absent or invalid."""
+    if not v:
+        return {}
+    if isinstance(v, dict):
+        return v
+    try:
+        r = json.loads(v)
+        return r if isinstance(r, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 def _oneline(s):
     return re.sub(r"\s+", " ", str(s)).strip()
 
@@ -103,19 +116,36 @@ def render_page(item, extraction, coll_items, task):
         props.append(_prop("tags", ", ".join(tags)))
 
     blocks = []
-    # For list/recommendation captures the collection bullets ARE the content — a Summary and
-    # Key points would just restate the list — so we omit both when the page carries a list.
-    # Long-form captures (no list) still get them.
-    if not coll_items:
+    recipe = _recipe(ex.get("recipe"))
+    has_recipe = bool(recipe.get("ingredients") or recipe.get("steps"))
+
+    if has_recipe:
+        # A recipe capture: document the FULL recipe (not a generic summary or list).
+        meta = [b for b in (f"Servings: {recipe['servings']}" if recipe.get("servings") else "",
+                            f"Time: {recipe['time']}" if recipe.get("time") else "") if b]
+        if meta:
+            blocks.append("- " + " · ".join(meta))
+        if recipe.get("ingredients"):
+            blocks.append(_section("## Ingredients", _as_list(recipe["ingredients"])))
+        if recipe.get("steps"):
+            lines = ["- ## Steps"]
+            for i, s in enumerate(_as_list(recipe["steps"]), 1):
+                lines.append(f"\t- {i}. {_oneline(s)}")
+            blocks.append("\n".join(lines))
+    elif not coll_items:
+        # For list/recommendation captures the collection bullets ARE the content — a Summary and
+        # Key points would just restate the list — so we omit both when the page carries a list.
+        # Long-form captures (no list) still get them.
         if ex.get("summary"):
             blocks.append(_section("## Summary", [ex["summary"]]))
         kps = _as_list(ex.get("key_points"))
         if kps:
             blocks.append(_section("## Key points", kps))
+
     if (ex.get("translation") or "").strip():
         blocks.append(_section("## Translation", [ex["translation"]]))
 
-    if coll_items:
+    if coll_items and not has_recipe:                # a recipe supersedes the generic collection list
         coll = coll_items[0]["collection"]
         lines = [f"- ## [[{coll}]]"]
         for c in coll_items:
@@ -255,6 +285,9 @@ def _has_content(ex):
     if not ex:
         return False
     if _as_list(ex.get("list_items")):
+        return True
+    _r = _recipe(ex.get("recipe"))
+    if _r.get("ingredients") or _r.get("steps"):
         return True
     summ = (ex.get("summary") or "").strip()
     if len(summ) < 20:

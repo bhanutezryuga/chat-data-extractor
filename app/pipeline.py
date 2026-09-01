@@ -120,11 +120,12 @@ def _write_result(con, item_id, rule, meta, data, kind):
     if data.get("_usage"):
         usage.record(con, item_id, data.get("_model"), kind, data["_usage"])
     con.execute(
-        "INSERT INTO extractions (id,item_id,summary,transcript,key_points,list_items,translation,detected_language,raw_metadata,source,model,created_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO extractions (id,item_id,summary,transcript,key_points,list_items,translation,detected_language,recipe,raw_metadata,source,model,created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (db.new_id(), item_id, data.get("summary"), data.get("transcript"),
          json.dumps(data.get("key_points", [])), json.dumps(data.get("list_items", [])),
          data.get("translation"), data.get("detected_language"),
+         json.dumps(data.get("recipe") or {}),
          json.dumps(meta), f"gemini_{kind}" if config.USE_GEMINI else "stub",
          data.get("_model"), db.now()))
     t = data.get("task", {}) or {}

@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS extractions (
   list_items   TEXT,                            -- JSON array of {name, note, link} (books/products/steps)
   translation  TEXT,                            -- Translate action: content rendered in TRANSLATE_TO
   detected_language TEXT,                        -- language Gemini detected in the content
+  recipe       TEXT,                            -- JSON {servings,time,ingredients[],steps[]} when the content is a recipe
   raw_metadata TEXT,                            -- JSON
   source       TEXT,                            -- description|oembed|readability|gemini_video|gemini_pdf
   model        TEXT,
