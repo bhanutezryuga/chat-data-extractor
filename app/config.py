@@ -67,7 +67,6 @@ DIGEST_LOOKAHEAD_DAYS = int(os.environ.get("DIGEST_LOOKAHEAD_DAYS", "7"))   # in
 LOGSEQ_GRAPH_DIR    = os.environ.get("LOGSEQ_GRAPH_DIR", "").strip()        # path to your Logseq graph *root* (contains pages/ journals/)
 LOGSEQ_ENABLED      = os.environ.get("LOGSEQ_ENABLED", "1") == "1"
 LOGSEQ_JOURNAL      = os.environ.get("LOGSEQ_JOURNAL", "1") == "1"          # also drop a "Captured …" breadcrumb in the daily journal
-LOGSEQ_SYNC_SECONDS = int(os.environ.get("LOGSEQ_SYNC_SECONDS", "60"))      # (Phase 2) read-back poll interval
 # Only these categories render as TODO items in Logseq (things you actively study/work through);
 # everything else (songs, recipes, videos to watch…) is written as a plain reference bullet.
 LOGSEQ_TODO_CATEGORIES = {c.strip() for c in

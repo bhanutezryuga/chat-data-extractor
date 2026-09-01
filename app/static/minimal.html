@@ -45,7 +45,6 @@
 <body>
 <header>
   <div class="links">
-    <a href="/full">Full dashboard →</a>
     <a id="logout" href="/logout" style="display:none">Sign out ⎋</a>
   </div>
   <h1>Knowledge Base <span>— capture → Logseq</span></h1>
@@ -113,7 +112,7 @@ async function refresh(){
     </div>`).join('') || '<div class="empty">No captures yet — send a link to your Telegram bot.</div>';
 
   document.getElementById('foot').textContent =
-    `${total} items · ${stats.revisit_due||0} due · auto-refresh 10s · full dashboard at /full`;
+    `${total} items · ${stats.revisit_due||0} due · auto-refresh 10s`;
 }
 
 fetch('/healthz').then(r=>r.json()).then(h=>{ if(h.auth) document.getElementById('logout').style.display='inline'; }).catch(()=>{});

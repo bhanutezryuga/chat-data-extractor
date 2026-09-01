@@ -106,15 +106,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, {"error": "unauthorized"})
             return self._send(200, auth.login_page(), "text/html; charset=utf-8")
 
-        if path in ("/", "/minimal.html"):     # minimal metrics view (default)
+        if path in ("/", "/minimal.html"):     # minimal metrics view
             try:
                 return self._send(200, (STATIC / "minimal.html").read_text(encoding="utf-8"),
-                                  "text/html; charset=utf-8")
-            except Exception as e:
-                return self._send(500, f"dashboard missing: {e}", "text/plain")
-        if path in ("/full", "/index.html"):   # full dashboard (feed + kanban + collections) — kept
-            try:
-                return self._send(200, (STATIC / "index.html").read_text(encoding="utf-8"),
                                   "text/html; charset=utf-8")
             except Exception as e:
                 return self._send(500, f"dashboard missing: {e}", "text/plain")
@@ -134,59 +128,11 @@ class Handler(BaseHTTPRequestHandler):
                                     "learned": learned, "revisit_due": revisit_due,
                                     "logseq": logseq.active()})
 
-        if path == "/api/collections":
-            con = db.connect()
-            cats = _rows(con, "SELECT name, collection FROM categories ORDER BY name")
-            items = _rows(con,
-                          "SELECT id, collection, name, note, link, done, item_id "
-                          "FROM collection_items ORDER BY done, created_at DESC LIMIT 500")
-            due = _rows(con,
-                        "SELECT id, title, category, content_type, raw_url, deadline, "
-                        "revisit_count, progress FROM items WHERE learn_status='active' "
-                        "AND deadline IS NOT NULL AND deadline <= ? ORDER BY deadline LIMIT 100",
-                        (db.now(),))
-            con.close()
-            return self._send(200, {"categories": cats, "items": items, "due": due})
-
         if path == "/api/usage":
             con = db.connect()
             data = usage.summary(con)
             con.close()
             return self._send(200, data)
-
-        m = re.match(r"^/api/items/([0-9a-f]+)$", path)
-        if m:
-            item_id = m.group(1)
-            con = db.connect()
-            item = con.execute(
-                "SELECT id, content_type, action, status, raw_url, confidence, created_at, "
-                "title, source, category, priority AS item_priority, deadline, revisit_stage, "
-                "revisit_count, learn_status, progress "
-                "FROM items WHERE id=?", (item_id,)).fetchone()
-            if not item:
-                con.close()
-                return self._send(404, {"error": "not found"})
-            ex = con.execute(
-                "SELECT summary, key_points, list_items, translation, detected_language, source, model, transcript "
-                "FROM extractions WHERE item_id=? ORDER BY created_at DESC LIMIT 1",
-                (item_id,)).fetchone()
-            task = con.execute(
-                "SELECT id, title, description, suggested_use_case, priority, status, tags "
-                "FROM tasks WHERE item_id=? ORDER BY created_at DESC LIMIT 1",
-                (item_id,)).fetchone()
-            logs = _rows(con,
-                         "SELECT step, status, detail, created_at FROM processing_logs "
-                         "WHERE item_id=? ORDER BY created_at", (item_id,))
-            coll = _rows(con,
-                         "SELECT id, collection, name, note, link, done FROM collection_items "
-                         "WHERE item_id=? ORDER BY done, created_at", (item_id,))
-            con.close()
-            return self._send(200, {
-                "item": dict(item),
-                "extraction": dict(ex) if ex else None,
-                "task": dict(task) if task else None,
-                "collection_items": coll,
-                "logs": logs})
 
         if path == "/api/items":
             con = db.connect()
@@ -198,18 +144,6 @@ class Handler(BaseHTTPRequestHandler):
                           "GROUP BY i.id ORDER BY i.created_at DESC LIMIT 200")
             con.close()
             return self._send(200, items)
-
-        if path == "/api/tasks":
-            con = db.connect()
-            tasks = _rows(con,
-                          "SELECT t.id, t.title, t.description, t.suggested_use_case, t.priority, "
-                          "t.status, t.tags, i.content_type, i.action, i.raw_url, i.id AS item_id, "
-                          "e.list_items "
-                          "FROM tasks t JOIN items i ON i.id = t.item_id "
-                          "LEFT JOIN extractions e ON e.item_id = i.id "
-                          "GROUP BY t.id ORDER BY t.created_at DESC LIMIT 200")
-            con.close()
-            return self._send(200, tasks)
 
         return self._send(404, {"error": "not found"})
 
@@ -245,46 +179,6 @@ class Handler(BaseHTTPRequestHandler):
                                   source_msg_id=db.now() + ":" + url[:40])
             return self._send(200, res or {"error": "duplicate"})
 
-        m = re.match(r"^/api/tasks/([0-9a-f]+)$", path)
-        if m:
-            status = (body.get("status") or "").upper()
-            if status not in ("TODO", "IN_PROGRESS", "DONE", "DISMISSED"):
-                return self._send(400, {"error": "bad status"})
-            con = db.connect()
-            con.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?",
-                        (status, db.now(), m.group(1)))
-            con.commit(); con.close()
-            return self._send(200, {"ok": True})
-
-        m = re.match(r"^/api/items/([0-9a-f]+)/reprocess$", path)
-        if m:
-            return self._send(200, pipeline.reprocess(m.group(1)) or {"error": "not found"})
-
-        m = re.match(r"^/api/items/([0-9a-f]+)/action$", path)
-        if m:
-            return self._send(200, pipeline.set_action(m.group(1), body.get("action", "")))
-
-        m = re.match(r"^/api/items/([0-9a-f]+)/revisit$", path)
-        if m:
-            return self._send(200, revisit.mark(m.group(1), body.get("action", "")))
-
-        if path == "/api/export/logseq":
-            if not logseq.active():
-                return self._send(200, {"enabled": False,
-                                        "error": "LOGSEQ_GRAPH_DIR not set"})
-            return self._send(200, {"enabled": True, "exported": logseq.export_all()})
-
-        m = re.match(r"^/api/collection-items/([0-9a-f]+)/toggle$", path)
-        if m:
-            con = db.connect()
-            cur = con.execute("UPDATE collection_items SET done = 1 - done WHERE id=?", (m.group(1),))
-            con.commit()
-            row = con.execute("SELECT done FROM collection_items WHERE id=?", (m.group(1),)).fetchone()
-            con.close()
-            if not cur.rowcount:
-                return self._send(404, {"error": "not found"})
-            return self._send(200, {"ok": True, "done": row["done"]})
-
         return self._send(404, {"error": "not found"})
 
 
@@ -298,11 +192,6 @@ def serve():
           + ("  (auth ON)" if auth.enabled() else "  (auth OFF — localhost only)"))
     if auth.enabled() and not config.SESSION_SECRET:
         print("  [web] note: SESSION_SECRET unset — cookies signed with APP_PASSWORD (set it for stable sessions)")
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  shutting down")
-        srv.shutdown()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

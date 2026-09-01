@@ -1,8 +1,8 @@
 """Tests for the Logseq export. See docs/LOGSEQ_PLAN.md.
 
 Hermetic: temp DB + temp graph dir + stub mode (no Gemini/network). Covers the minimal page
-format (title + tags only), study-gated TODO markers, bulk export, reprocess preservation, and
-the retained (currently-unwired) read-back helpers. Run:  python tests/test_logseq.py
+format (title + tags only), study-gated TODO markers, bulk export, and reprocess preservation.
+Run:  python tests/test_logseq.py
 """
 import os
 import sys
@@ -170,19 +170,6 @@ con.close()
 check("reprocess preserves checked-off done state", row["done"] == 1)
 check("reprocess reuses the same collection id", row["id"] == cid_k)
 check("reprocess doesn't duplicate collection rows", n_now == 2)
-
-# ---------- retained read-back helpers (code kept, watcher not started) ----------
-check("_is_conflicted flags conflict copies + git markers, not clean files",
-      logseq._is_conflicted("p.sync-conflict-1.md", "") and logseq._is_conflicted("p.md", "a\n<<<<<<< HEAD\nb")
-      and logseq._is_conflicted(".hidden.md", "") and not logseq._is_conflicted("p.md", "clean"))
-# a hand-crafted page WITH item-id still round-trips a completion status (proves _apply/sync work if re-enabled)
-active_id = _seed_item(category="Reading")
-pages_dir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
-open(os.path.join(pages_dir, "manual.md"), "w", encoding="utf-8").write(f"item-id:: {active_id}\nstatus:: learned\n- ## Notes\n\t-\n")
-open(os.path.join(pages_dir, "conflicted.sync-conflict-1.md"), "w", encoding="utf-8").write(f"item-id:: {active_id}\nstatus:: learned\n")
-logseq.sync_from_logseq()
-con = db.connect(); ls = con.execute("SELECT learn_status FROM items WHERE id=?", (active_id,)).fetchone()["learn_status"]; con.close()
-check("read-back: status:: learned applied from a keyed page", ls == "learned", ls)
 
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)
