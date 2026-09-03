@@ -262,7 +262,8 @@ def handle_update(u):
             send_message(chat_id, "Logseq export is off — set LOGSEQ_GRAPH_DIR in .env and restart.")
         else:
             n = logseq.export_all()
-            send_message(chat_id, f"⤓ Exported {n} item(s) to your Logseq graph.")
+            send_message(chat_id, f"⤓ Exported {n} new item(s) to your Logseq graph." if n
+                         else "✅ Logseq graph already up to date — no new items to export.")
         return
 
     if low.startswith("/review"):          # on-demand weekly review digest
@@ -281,7 +282,7 @@ def handle_update(u):
             if r and r.get("status") == "AWAITING_ACTION":
                 send_message(chat_id, f"🆕 What should I do with this?\n{url}", _new_kbd(r["id"]))
             else:
-                send_message(chat_id, "🔁 Already saved that link — skipping.")
+                send_message(chat_id, "🔁 Already saved this — skipping.")
         return
 
     results = []
@@ -311,7 +312,7 @@ def handle_update(u):
             continue
         sent = True
         if r["status"] == "DUPLICATE":
-            send_message(chat_id, "🔁 Already saved that link — skipping.")
+            send_message(chat_id, "🔁 Already saved this — skipping.")
         elif r["status"] == "ACTIONABLE":
             text_out, kbd = _format_result(r["id"])
             send_message(chat_id, text_out or "✅ done", kbd)

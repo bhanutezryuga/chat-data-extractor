@@ -18,7 +18,7 @@ os.environ["LOGSEQ_JOURNAL"] = "1"                     # deterministic regardles
 os.environ["LOGSEQ_TODO_CATEGORIES"] = "Learning,Reading"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import config, db, pipeline, logseq   # noqa: E402
+from app import config, db, pipeline, logseq, gemini   # noqa: E402
 
 db.init()
 _passed = []
@@ -29,25 +29,34 @@ def check(name, ok, detail=""):
     _passed.append(bool(ok))
 
 
-def _seed_item(url="https://x.com/i", category="Learning"):
+_seed_n = 0
+
+
+def _seed_item(url=None, category="Learning"):
+    """Seed a distinct capture. Content varies per call (a token) so the content-dedup in
+    _write_knowledge treats each as its own item, not a duplicate. Returns (item_id, data)."""
+    global _seed_n
+    _seed_n += 1
+    tok = _seed_n
     con = db.connect()
     iid = db.new_id()
     con.execute("INSERT INTO items (id,user_id,raw_url,content_type,status,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?)", (iid, config.USER_ID, url, "post", "ACTIONABLE", db.now(), db.now()))
+                "VALUES (?,?,?,?,?,?,?)",
+                (iid, config.USER_ID, url or f"https://x.com/i{tok}", "post", "ACTIONABLE", db.now(), db.now()))
     con.execute("INSERT INTO extractions (id,item_id,summary,key_points,list_items,created_at) "
                 "VALUES (?,?,?,?,?,?)",
                 (db.new_id(), iid, "A concise but real summary of the captured item.", '["p1","p2"]', "[]", db.now()))
     con.commit()
     con.close()
-    data = {"title": "Best keyboards 2026", "category": category,
+    data = {"title": f"Best keyboards 2026 (set {tok})", "category": category,
             "task": {"title": "Pick a keyboard", "priority": "high", "tags": ["mechanical", "deep work"]},
-            "list_items": [{"name": "Keychron K2", "note": "hot-swap", "link": "keychron.com/k2"},
-                           {"name": "NuPhy Air75", "note": "low profile", "link": "link not available"}]}
+            "list_items": [{"name": f"Keychron K2 v{tok}", "note": "hot-swap", "link": "keychron.com/k2"},
+                           {"name": f"NuPhy Air75 v{tok}", "note": "low profile", "link": "link not available"}]}
     con = db.connect()
     pipeline._write_knowledge(con, iid, data)
     con.commit()
     con.close()
-    return iid
+    return iid, data
 
 
 def _page_path(iid):
@@ -80,6 +89,59 @@ check("render (study): Task is a TODO", "## Task" in md and "TODO Read these" in
 check("render (study): scheduled Revisit TODO", "TODO Revisit —" in md and "SCHEDULED: <2026-08-08" in md)
 check("render: user Notes area present", logseq.NOTES_MARKER in md)
 check("render: link kept / 'link not available' -> none", "link:: ex.com/tis" in md and md.count("link:: ") == 1)
+# list content: the bullets ARE the value, so Summary/Key points are omitted as redundant
+check("render (has list): NO ## Summary / ## Key points", "## Summary" not in md and "## Key points" not in md)
+
+# ---------- pure render: LONG-FORM item (no list -> keep Summary/Key points) ----------
+article = {"id": "art12345", "title": "On Complexity", "category": "Reading", "content_type": "article",
+           "created_at": "2026-08-07 10:00:00", "learn_status": "active"}
+amd = logseq.render_page(article, {"summary": "A dense essay worth a recap.", "key_points": '["one","two"]'}, [], {})
+check("render (no list): keeps ## Summary + ## Key points",
+      "## Summary" in amd and "A dense essay" in amd and "## Key points" in amd and "\t- one" in amd)
+
+# ---------- pure render: RECIPE item -> full recipe, supersedes summary/list ----------
+recipe_item = {"id": "rcp12345", "title": "Miso Ramen", "category": "Cooking", "content_type": "reel",
+               "created_at": "2026-09-01 10:00:00", "learn_status": "active"}
+recipe_ex = {"summary": "A quick miso ramen.", "key_points": '["fast","cozy"]',
+             "recipe": '{"servings":"2","time":"25 min",'
+                       '"ingredients":["200g ramen noodles","3 tbsp miso paste"],'
+                       '"steps":["Boil the noodles.","Stir in the miso.","Serve hot."]}'}
+rmd = logseq.render_page(recipe_item, recipe_ex, [], {})
+check("render (recipe): ## Ingredients lists each ingredient verbatim",
+      "## Ingredients" in rmd and "200g ramen noodles" in rmd and "3 tbsp miso paste" in rmd)
+check("render (recipe): ## Steps numbered in order",
+      "## Steps" in rmd and "1. Boil the noodles." in rmd and "3. Serve hot." in rmd)
+check("render (recipe): servings/time line", "Servings: 2" in rmd and "Time: 25 min" in rmd)
+check("render (recipe): NO Summary/Key points (recipe supersedes)",
+      "## Summary" not in rmd and "## Key points" not in rmd)
+rcoll = [{"id": "rc1", "collection": "Recipes", "name": "200g ramen noodles", "note": None, "link": None, "done": 0}]
+check("render (recipe): supersedes the generic collection list too",
+      "## [[Recipes]]" not in logseq.render_page(recipe_item, recipe_ex, rcoll, {})
+      and "## Ingredients" in logseq.render_page(recipe_item, recipe_ex, rcoll, {}))
+check("_has_content: a recipe-only extraction still exports", logseq._has_content({"summary": "", "recipe": recipe_ex["recipe"]}))
+check("_has_content: empty recipe {} is ignored", not logseq._has_content({"summary": "", "recipe": "{}"}))
+
+# stub auto-detects recipe content (keeps the offline path exercising the recipe field)
+_rule = {"content_type": "reel"}
+_rs = gemini.stub(_rule, "https://insta/reel/x", "Easy pancake recipe: mix and cook")
+check("stub: recipe content -> Cooking + populated recipe", _rs["category"] == "Cooking" and _rs["recipe"].get("ingredients"))
+check("stub: non-recipe -> empty recipe {}", gemini.stub(_rule, "https://insta/reel/y", "A book review video")["recipe"] == {})
+
+# recipe round-trips: DB recipe column -> export_item (SELECT *) -> rendered page
+_rid = db.new_id()
+con = db.connect()
+con.execute("INSERT INTO items (id,user_id,raw_url,content_type,status,title,category,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (_rid, config.USER_ID, "https://insta/reel/rcp", "reel", "ACTIONABLE", "Test Curry", "Cooking", db.now(), db.now()))
+con.execute("INSERT INTO extractions (id,item_id,summary,key_points,list_items,recipe,created_at) VALUES (?,?,?,?,?,?,?)",
+            (db.new_id(), _rid, "thin summary", "[]", "[]",
+             '{"servings":"4","time":"40 min","ingredients":["1 onion","2 cloves garlic"],"steps":["Chop.","Simmer."]}',
+             db.now()))
+con.commit(); con.close()
+check("export_item exports a recipe item", logseq.export_item(_rid) in ("created", "updated"))
+_rpage = open(_page_path(_rid), encoding="utf-8").read()
+check("recipe page (from DB) has ## Ingredients + numbered ## Steps",
+      "## Ingredients" in _rpage and "1 onion" in _rpage and "1. Chop." in _rpage and "## Summary" not in _rpage)
 
 # ---------- pure render: NON-STUDY item (song/recipe -> NO todo) ----------
 song = {"id": "song1234", "title": "Lofi mix", "category": "Listening", "content_type": "reel",
@@ -92,7 +154,7 @@ check("render (non-study): collection items are plain bullets", "\t- Track A" in
 check("render (non-study): still tagged for review", "tags:: " in smd and "Listening" in smd)
 
 # ---------- export_item writes real files ----------
-iid = _seed_item(category="Learning")
+iid, d1 = _seed_item(category="Learning")
 ok = logseq.export_item(iid)
 path = _page_path(iid)
 check("export_item writes a page", ok and os.path.exists(path))
@@ -100,7 +162,7 @@ page = open(path, encoding="utf-8").read()
 check("page: minimal props (title + tags, nothing else)",
       page.startswith("title:: ") and "tags:: " in page.split("\n\n")[0]
       and "item-id::" not in page and "status::" not in page)
-check("page (Learning=study): collection items are TODO", "TODO Keychron K2" in page)
+check("page (Learning=study): collection items are TODO", f'TODO {d1["list_items"][0]["name"]}' in page)
 
 # ---------- ## Notes preserved across re-export ----------
 _edited = open(path, encoding="utf-8").read().rstrip() + "\n\t- MY NOTE\n"
@@ -110,13 +172,17 @@ check("re-export preserves user's ## Notes edits", "MY NOTE" in open(path, encod
 
 # ---------- journal breadcrumb (idempotent) ----------
 jfile = os.path.join(config.LOGSEQ_GRAPH_DIR, "journals", db.now()[:10].replace("-", "_") + ".md")
-check("journal breadcrumb written", os.path.exists(jfile) and "Captured [[Best keyboards 2026]]" in open(jfile, encoding="utf-8").read())
+_crumb = f'Captured [[{d1["title"]}]]'
+check("journal breadcrumb written", os.path.exists(jfile) and _crumb in open(jfile, encoding="utf-8").read())
 logseq.export_item(iid)
-check("journal breadcrumb idempotent", open(jfile, encoding="utf-8").read().count("Captured [[Best keyboards 2026]]") == 1)
+check("journal breadcrumb idempotent", open(jfile, encoding="utf-8").read().count(_crumb) == 1)
 
-# ---------- export_all ----------
-con = db.connect(); n_actionable = con.execute("SELECT count(*) n FROM items WHERE status='ACTIONABLE'").fetchone()["n"]; con.close()
-check("export_all exports every ACTIONABLE item", logseq.export_all() == n_actionable and n_actionable >= 1)
+# ---------- export reports NEWLY-created pages (delta), not the running total ----------
+check("export_item returns 'created' for a new page", ok == "created")
+check("export_item returns 'updated' when the page already exists", logseq.export_item(iid) == "updated")
+os.remove(path)                                        # page missing from the graph -> re-export is 'new'
+check("export_all counts only newly-created pages", logseq.export_all() == 1)
+check("export_all: re-run with nothing new returns 0", logseq.export_all() == 0)
 
 # ---------- duplicate title:: disambiguation (prevents Logseq "page already exists") ----------
 _udir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
@@ -146,7 +212,7 @@ check("export_item skips a content-less item (no page)",
       logseq.export_item(_junk) is False and not os.path.exists(_page_path(_junk)))
 
 # ---------- re-titling on reprocess must not orphan the old page ----------
-rt = _seed_item(category="Learning")
+rt, _ = _seed_item(category="Learning")
 logseq.export_item(rt)
 con = db.connect(); con.execute("UPDATE items SET title=? WHERE id=?", ("Totally New Title", rt)); con.commit(); con.close()
 logseq.export_item(rt)
@@ -156,15 +222,13 @@ check("re-title leaves exactly one page (no orphan)",
       len(_matches) == 1 and _matches[0].startswith("totally-new-title"), str(_matches))
 
 # ---------- reprocess preserves collection done + row id (DB-level) ----------
-iid3 = _seed_item(category="Learning")
+iid3, d3 = _seed_item(category="Learning")
+_kname = d3["list_items"][0]["name"]
 con = db.connect()
-cid_k = con.execute("SELECT id FROM collection_items WHERE item_id=? AND name='Keychron K2'", (iid3,)).fetchone()["id"]
+cid_k = con.execute("SELECT id FROM collection_items WHERE item_id=? AND name=?", (iid3, _kname)).fetchone()["id"]
 con.execute("UPDATE collection_items SET done=1 WHERE id=?", (cid_k,)); con.commit(); con.close()
-same = {"title": "Best keyboards 2026", "category": "Learning", "task": {"title": "Pick a keyboard"},
-        "list_items": [{"name": "Keychron K2", "note": "hot-swap", "link": "keychron.com/k2"},
-                       {"name": "NuPhy Air75", "note": "low profile", "link": "link not available"}]}
-con = db.connect(); pipeline._write_knowledge(con, iid3, same); con.commit()
-row = con.execute("SELECT id, done FROM collection_items WHERE item_id=? AND name='Keychron K2'", (iid3,)).fetchone()
+con = db.connect(); pipeline._write_knowledge(con, iid3, d3); con.commit()   # reprocess with the SAME content
+row = con.execute("SELECT id, done FROM collection_items WHERE item_id=? AND name=?", (iid3, _kname)).fetchone()
 n_now = con.execute("SELECT count(*) n FROM collection_items WHERE item_id=?", (iid3,)).fetchone()["n"]
 con.close()
 check("reprocess preserves checked-off done state", row["done"] == 1)

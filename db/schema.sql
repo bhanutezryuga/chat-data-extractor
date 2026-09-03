@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS items (
   learn_status   TEXT NOT NULL DEFAULT 'active', -- active|learned|archived
   progress       INTEGER NOT NULL DEFAULT 0,     -- 0..100
   reminded_at    TEXT,
+  content_key    TEXT,                           -- fingerprint of the extracted content, for cross-URL dedup
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (source_chat_id, source_msg_id)
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS extractions (
   list_items   TEXT,                            -- JSON array of {name, note, link} (books/products/steps)
   translation  TEXT,                            -- Translate action: content rendered in TRANSLATE_TO
   detected_language TEXT,                        -- language Gemini detected in the content
+  recipe       TEXT,                            -- JSON {servings,time,ingredients[],steps[]} when the content is a recipe
   raw_metadata TEXT,                            -- JSON
   source       TEXT,                            -- description|oembed|readability|gemini_video|gemini_pdf
   model        TEXT,

@@ -36,6 +36,8 @@ def init():
         con.execute("ALTER TABLE extractions ADD COLUMN translation TEXT")
     if "detected_language" not in ex_cols:
         con.execute("ALTER TABLE extractions ADD COLUMN detected_language TEXT")
+    if "recipe" not in ex_cols:
+        con.execute("ALTER TABLE extractions ADD COLUMN recipe TEXT")
     it_cols = {r[1] for r in con.execute("PRAGMA table_info(items)").fetchall()}
     if "action" not in it_cols:
         con.execute("ALTER TABLE items ADD COLUMN action TEXT")
@@ -45,14 +47,16 @@ def init():
                      ("revisit_stage", "INTEGER NOT NULL DEFAULT 0"),
                      ("revisit_count", "INTEGER NOT NULL DEFAULT 0"),
                      ("learn_status", "TEXT NOT NULL DEFAULT 'active'"),
-                     ("progress", "INTEGER NOT NULL DEFAULT 0"), ("reminded_at", "TEXT")):
+                     ("progress", "INTEGER NOT NULL DEFAULT 0"), ("reminded_at", "TEXT"),
+                     ("content_key", "TEXT")):
         if col not in it_cols:
             con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
     # indexes on the PKM columns — here (not in schema.sql) so they run AFTER the ALTERs above;
     # on a pre-existing items table the columns don't exist until the migration completes.
     for stmt in ("CREATE INDEX IF NOT EXISTS idx_items_deadline ON items(deadline)",
                  "CREATE INDEX IF NOT EXISTS idx_items_category ON items(category)",
-                 "CREATE INDEX IF NOT EXISTS idx_items_learn    ON items(learn_status)"):
+                 "CREATE INDEX IF NOT EXISTS idx_items_learn    ON items(learn_status)",
+                 "CREATE INDEX IF NOT EXISTS idx_items_content  ON items(content_key)"):
         con.execute(stmt)
     # seed the category taxonomy (extensible)
     if con.execute("SELECT count(*) FROM categories").fetchone()[0] == 0:

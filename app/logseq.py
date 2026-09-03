@@ -40,6 +40,19 @@ def _as_list(v):
         return [str(v)]
 
 
+def _recipe(v):
+    """Parse the stored recipe JSON (str or dict) into a dict; {} when absent or invalid."""
+    if not v:
+        return {}
+    if isinstance(v, dict):
+        return v
+    try:
+        r = json.loads(v)
+        return r if isinstance(r, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 def _oneline(s):
     return re.sub(r"\s+", " ", str(s)).strip()
 
@@ -103,15 +116,36 @@ def render_page(item, extraction, coll_items, task):
         props.append(_prop("tags", ", ".join(tags)))
 
     blocks = []
-    if ex.get("summary"):
-        blocks.append(_section("## Summary", [ex["summary"]]))
-    kps = _as_list(ex.get("key_points"))
-    if kps:
-        blocks.append(_section("## Key points", kps))
+    recipe = _recipe(ex.get("recipe"))
+    has_recipe = bool(recipe.get("ingredients") or recipe.get("steps"))
+
+    if has_recipe:
+        # A recipe capture: document the FULL recipe (not a generic summary or list).
+        meta = [b for b in (f"Servings: {recipe['servings']}" if recipe.get("servings") else "",
+                            f"Time: {recipe['time']}" if recipe.get("time") else "") if b]
+        if meta:
+            blocks.append("- " + " · ".join(meta))
+        if recipe.get("ingredients"):
+            blocks.append(_section("## Ingredients", _as_list(recipe["ingredients"])))
+        if recipe.get("steps"):
+            lines = ["- ## Steps"]
+            for i, s in enumerate(_as_list(recipe["steps"]), 1):
+                lines.append(f"\t- {i}. {_oneline(s)}")
+            blocks.append("\n".join(lines))
+    elif not coll_items:
+        # For list/recommendation captures the collection bullets ARE the content — a Summary and
+        # Key points would just restate the list — so we omit both when the page carries a list.
+        # Long-form captures (no list) still get them.
+        if ex.get("summary"):
+            blocks.append(_section("## Summary", [ex["summary"]]))
+        kps = _as_list(ex.get("key_points"))
+        if kps:
+            blocks.append(_section("## Key points", kps))
+
     if (ex.get("translation") or "").strip():
         blocks.append(_section("## Translation", [ex["translation"]]))
 
-    if coll_items:
+    if coll_items and not has_recipe:                # a recipe supersedes the generic collection list
         coll = coll_items[0]["collection"]
         lines = [f"- ## [[{coll}]]"]
         for c in coll_items:
@@ -200,15 +234,19 @@ def _merge_notes(new_md, old_text):
 
 
 def _write_page(item, md):
+    """Write the item's page. Returns True if this created a NEW page, False if it overwrote an
+    existing one (a page already on disk for this item, under its current or a previous title)."""
     pages = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
     os.makedirs(pages, exist_ok=True)
     fname = _page_filename(item)
     path = os.path.join(pages, fname)
+    existed = os.path.exists(path)
     # remove any stale page for this same item (the filename slug changes if Gemini re-titles it
     # on reprocess) so re-titling never leaves an orphan duplicate behind.
     suffix = f"-{item['id'][:8]}.md"
     for name in os.listdir(pages):
         if name.endswith(suffix) and name != fname:
+            existed = True                          # already had a page (under an older title)
             try:
                 os.remove(os.path.join(pages, name))
             except OSError:
@@ -217,7 +255,7 @@ def _write_page(item, md):
         with open(path, encoding="utf-8") as f:
             md = _merge_notes(md, f.read())
     _atomic_write(path, md)
-    return path
+    return not existed
 
 
 def _write_journal(item):
@@ -248,6 +286,9 @@ def _has_content(ex):
         return False
     if _as_list(ex.get("list_items")):
         return True
+    _r = _recipe(ex.get("recipe"))
+    if _r.get("ingredients") or _r.get("steps"):
+        return True
     summ = (ex.get("summary") or "").strip()
     if len(summ) < 20:
         return False
@@ -256,20 +297,22 @@ def _has_content(ex):
 
 
 def export_all():
-    """Export every processed (ACTIONABLE) item to Logseq — for backfilling a graph after
-    enabling the feature. Returns the count written. No-op (0) if disabled."""
+    """Re-export every processed (ACTIONABLE) item to Logseq. Returns the number of pages this run
+    NEWLY created (items not already in the graph) — not the running total, so a repeat export of an
+    up-to-date graph returns 0. No-op (0) if disabled."""
     if not active():
         return 0
     con = db.connect()
     ids = [r["id"] for r in con.execute(
         "SELECT id FROM items WHERE status='ACTIONABLE' ORDER BY created_at")]
     con.close()
-    return sum(1 for iid in ids if export_item(iid))
+    return sum(1 for iid in ids if export_item(iid) == "created")
 
 
 def export_item(item_id):
-    """Render + write one item's Logseq page and journal breadcrumb. No-op if disabled;
-    never raises into the pipeline (a Logseq problem must not fail a capture)."""
+    """Render + write one item's Logseq page and journal breadcrumb. Returns 'created' (new page),
+    'updated' (overwrote an existing one), or False (disabled / skipped / no content / error).
+    Never raises into the pipeline (a Logseq problem must not fail a capture)."""
     if not active():
         return False
     try:
@@ -293,10 +336,10 @@ def export_item(item_id):
         pages_dir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
         render_item = {**item, "title": _unique_title(item.get("title"), _page_filename(item), pages_dir)}
         md = render_page(render_item, dict(ex) if ex else {}, coll, dict(task) if task else {})
-        _write_page(item, md)                       # ORIGINAL item -> stable filename
+        created = _write_page(item, md)             # ORIGINAL item -> stable filename
         if config.LOGSEQ_JOURNAL:
             _write_journal(item)
-        return True
+        return "created" if created else "updated"
     except Exception as e:
         print(f"  [logseq] export failed for {item_id}: {e}")
         return False
