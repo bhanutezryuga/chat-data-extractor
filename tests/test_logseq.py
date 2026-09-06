@@ -133,9 +133,12 @@ check("journal breadcrumb written", os.path.exists(jfile) and _crumb in open(jfi
 logseq.export_item(iid)
 check("journal breadcrumb idempotent", open(jfile, encoding="utf-8").read().count(_crumb) == 1)
 
-# ---------- export_all ----------
-con = db.connect(); n_actionable = con.execute("SELECT count(*) n FROM items WHERE status='ACTIONABLE'").fetchone()["n"]; con.close()
-check("export_all exports every ACTIONABLE item", logseq.export_all() == n_actionable and n_actionable >= 1)
+# ---------- export reports NEWLY-created pages (delta), not the running total ----------
+check("export_item returns 'created' for a new page", ok == "created")
+check("export_item returns 'updated' when the page already exists", logseq.export_item(iid) == "updated")
+os.remove(path)                                        # page missing from the graph -> re-export is 'new'
+check("export_all counts only newly-created pages", logseq.export_all() == 1)
+check("export_all: re-run with nothing new returns 0", logseq.export_all() == 0)
 
 # ---------- duplicate title:: disambiguation (prevents Logseq "page already exists") ----------
 _udir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
