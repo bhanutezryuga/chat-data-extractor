@@ -145,6 +145,17 @@ class Handler(BaseHTTPRequestHandler):
             con.close()
             return self._send(200, items)
 
+        if path == "/api/failures":     # stuck items (FAILED / NEEDS_REVIEW) + why, for the dashboard
+            con = db.connect()
+            rows = _rows(con,
+                         "SELECT i.id, i.title, i.raw_url, i.status, i.category, "
+                         "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id "
+                         " AND p.status IN ('warn','error') ORDER BY p.created_at DESC LIMIT 1) AS reason "
+                         "FROM items i WHERE i.status IN ('FAILED','NEEDS_REVIEW') "
+                         "ORDER BY i.status, i.created_at DESC LIMIT 300")
+            con.close()
+            return self._send(200, {"count": len(rows), "items": rows})
+
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):

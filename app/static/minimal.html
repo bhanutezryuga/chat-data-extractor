@@ -38,6 +38,9 @@
   .status { font-weight: 700; font-size: 10px; }
   .item a { color: #60a5fa; font-size: 12px; text-decoration: none; word-break: break-all; }
   .sum { color: #94a3b8; font-size: 12px; margin-top: 4px; }
+  .reason { color: #f59e0b; font-size: 11px; margin-top: 4px; word-break: break-word; }
+  .sec h2 code { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 1px 6px; font-size: 11px; color: #cbd5e1; text-transform: none; letter-spacing: 0; }
+  #attention h2 { color: #f59e0b; }
   .empty { color: #475569; font-size: 13px; }
   footer { text-align: center; color: #64748b; font-size: 11px; padding: 16px; }
 </style>
@@ -53,6 +56,10 @@
 
 <main>
   <div class="tiles" id="tiles"></div>
+  <section class="sec" id="attention" hidden>
+    <h2>⚠ Needs attention (<span id="att-count">0</span>) — run <code>python -m app.sideload --retry --run</code> to retry</h2>
+    <div class="rec" id="att-list"></div>
+  </section>
   <div class="sec"><h2>By category</h2><div class="cats" id="cats"></div></div>
   <div class="sec"><h2>Recent captures</h2><div class="rec" id="recent"></div></div>
 </main>
@@ -81,8 +88,26 @@ function renderUsage(u){
 }
 
 async function refresh(){
-  const [stats, use, items] = await Promise.all([api('/api/stats'), api('/api/usage'), api('/api/items')]);
+  const [stats, use, items, fails] = await Promise.all([api('/api/stats'), api('/api/usage'), api('/api/items'), api('/api/failures')]);
   renderUsage(use);
+
+  // "Needs attention" — shown ONLY when there are FAILED / NEEDS_REVIEW items
+  const att = document.getElementById('attention');
+  if (fails && fails.count > 0) {
+    document.getElementById('att-count').textContent = fails.count;
+    document.getElementById('att-list').innerHTML = (fails.items||[]).slice(0,50).map(it => `
+      <div class="item">
+        <div class="top">
+          <span class="t">${esc(it.title || '(no title)')}${it.category?`<span class="catbadge">${esc(it.category)}</span>`:''}</span>
+          <span class="status" style="color:${COLOR[it.status]||'#888'}">${esc(it.status)}</span>
+        </div>
+        ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
+        ${it.reason?`<div class="reason">${esc(it.reason)}</div>`:''}
+      </div>`).join('');
+    att.hidden = false;
+  } else {
+    att.hidden = true;
+  }
 
   const statuses = stats.statuses || {};
   const total = Object.values(statuses).reduce((a,b)=>a+b, 0);

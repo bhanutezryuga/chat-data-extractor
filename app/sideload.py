@@ -10,12 +10,17 @@ throttle between links.
 
 Re-running is safe: already-saved links are skipped (dedup), so a run stopped on budget or a crash
 resumes by simply running again.
+
+`--retry` reprocesses items stuck in FAILED / NEEDS_REVIEW (mostly transient failures — rate-limits,
+503s, blips) instead of reading a file:
+
+    python -m app.sideload --retry [--run] [--limit N] [--delay S] [--all]
 """
 import argparse
 import hashlib
 import time
 
-from . import config, db, netguard, pipeline, usage
+from . import config, db, instagram, netguard, pipeline, usage
 
 
 # ---- parsing --------------------------------------------------------------
@@ -125,21 +130,100 @@ def run(path, *, execute=False, limit=None, delay=2.0, allow_nonpublic=False,
     return summary
 
 
+def _recent_429(con, item_id):
+    """True if this item logged an Instagram 429 in the last few minutes (this reprocess)."""
+    return bool(con.execute(
+        "SELECT 1 FROM processing_logs WHERE item_id=? AND detail LIKE '%429%' "
+        "AND created_at >= datetime('now','-5 minutes') LIMIT 1", (item_id,)).fetchone())
+
+
+def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
+          reprocess_fn=None, out=print):
+    """Reprocess items stuck in FAILED / NEEDS_REVIEW (mostly transient — rate-limits, 503s, blips).
+    Gentle: one at a time with a delay, bailing fast on an Instagram logout, 2 consecutive 429s,
+    4 consecutive non-recoveries, or the daily budget — so it never hammers a dead session.
+    Dry-run unless execute=True. Returns a summary dict."""
+    reprocess_fn = reprocess_fn or pipeline.reprocess
+    con = db.connect()
+    q = ("SELECT id, raw_url, status FROM items WHERE status IN ('FAILED','NEEDS_REVIEW')"
+         + ("" if not sideload_only else " AND source_chat_id='sideload'") + " ORDER BY created_at")
+    rows = [dict(r) for r in con.execute(q)]
+    con.close()
+
+    before = {}
+    for r in rows:
+        before[r["status"]] = before.get(r["status"], 0) + 1
+    summary = {"candidates": len(rows), "before": before, "processed": 0,
+               "recovered": 0, "results": {}, "stopped": None}
+
+    scope = "sideload only" if sideload_only else "all sources"
+    out(f"[retry] {len(rows)} stuck item(s) [{scope}]: "
+        + (", ".join(f"{k}={v}" for k, v in sorted(before.items())) or "none"))
+    if not execute:
+        out("  DRY RUN - add --run to reprocess them.")
+        return summary
+
+    targets = rows if limit is None else rows[:limit]
+    out(f"  reprocessing {len(targets)}" + (f" (limit {limit})" if limit is not None else "") + "...")
+    consec_429 = consec_fail = 0
+    for i, it in enumerate(targets, 1):
+        if "instagram.com" in (it["raw_url"] or "") and not instagram._cookie_header():
+            summary["stopped"] = "logged_out"
+            out("  sessionid gone -> Instagram logged out -> STOP (refresh the cookie)"); break
+        con = db.connect(); ok_budget = usage.budget_ok(con); con.close()
+        if not ok_budget:
+            summary["stopped"] = "budget"
+            out("  daily Gemini budget reached -> STOP (resume later)"); break
+        try:
+            st = (reprocess_fn(it["id"]) or {}).get("status", "?")
+        except Exception as e:
+            st = "ERROR"; out(f"  [{i}/{len(targets)}] ERROR {it['id'][:8]}: {e}")
+        con = db.connect(); got_429 = _recent_429(con, it["id"]); con.close()
+        summary["results"][st] = summary["results"].get(st, 0) + 1
+        summary["processed"] += 1
+        if st == "ACTIONABLE":
+            summary["recovered"] += 1
+        out(f"  [{i}/{len(targets)}] {st}{' [429]' if got_429 else ''}  {(it['raw_url'] or it['id'])[:60]}")
+        consec_429 = consec_429 + 1 if got_429 else 0
+        consec_fail = 0 if st == "ACTIONABLE" else consec_fail + 1
+        if consec_429 >= 2:
+            summary["stopped"] = "rate_limited"; out("  2 consecutive 429s -> STOP before escalation"); break
+        if consec_fail >= 4:
+            summary["stopped"] = "consecutive_failures"; out("  4 non-recoveries in a row -> STOP"); break
+        if delay and i < len(targets):
+            time.sleep(delay)
+
+    parts = ", ".join(f"{k}={v}" for k, v in sorted(summary["results"].items()))
+    out(f"[retry] done - reprocessed {summary['processed']}, recovered {summary['recovered']}"
+        + (f" ({parts})" if parts else "")
+        + (f" - STOPPED: {summary['stopped']}" if summary["stopped"] else ""))
+    return summary
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="python -m app.sideload",
-        description="Bulk-import links from a '<timestamp> <link>' text file into the capture pipeline.")
-    p.add_argument("file", help="path to the links file")
+        description="Bulk-import links from a '<timestamp> <link>' file, or --retry stuck items.")
+    p.add_argument("file", nargs="?", help="path to the links file (omit when using --retry)")
+    p.add_argument("--retry", action="store_true",
+                   help="reprocess stuck FAILED/NEEDS_REVIEW items instead of reading a file")
+    p.add_argument("--all", action="store_true",
+                   help="with --retry: include items from all sources (default: sideload only)")
     p.add_argument("--run", action="store_true",
-                   help="actually process the new links (default: dry-run report only)")
-    p.add_argument("--limit", type=int, default=None, help="max NEW links to process this run")
+                   help="actually process (default: dry-run report only)")
+    p.add_argument("--limit", type=int, default=None, help="max items to process this run")
     p.add_argument("--delay", type=float, default=2.0,
-                   help="seconds to sleep between links (default 2; be gentle on Gemini/Instagram)")
+                   help="seconds to sleep between items (be gentle on Gemini/Instagram)")
     p.add_argument("--allow-nonpublic", action="store_true",
                    help="disable the SSRF public-URL pre-check (off by default)")
     a = p.parse_args(argv)
     db.init()
-    run(a.file, execute=a.run, limit=a.limit, delay=a.delay, allow_nonpublic=a.allow_nonpublic)
+    if a.retry:
+        retry(execute=a.run, limit=a.limit, delay=a.delay, sideload_only=not a.all)
+    elif a.file:
+        run(a.file, execute=a.run, limit=a.limit, delay=a.delay, allow_nonpublic=a.allow_nonpublic)
+    else:
+        p.error("provide a links file, or use --retry")
 
 
 if __name__ == "__main__":
