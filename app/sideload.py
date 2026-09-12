@@ -137,6 +137,14 @@ def _recent_429(con, item_id):
         "AND created_at >= datetime('now','-5 minutes') LIMIT 1", (item_id,)).fetchone())
 
 
+def _is_gone(reason):
+    """A permanently unrecoverable failure — a deleted/removed post (HTTP 404 Not Found / 410 Gone).
+    Retrying these only wastes a request and, since they always re-fail, would trip the
+    consecutive-non-recovery safety before the recoverable items are even reached."""
+    r = reason or ""
+    return "Error 404" in r or "Error 410" in r
+
+
 def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
           reprocess_fn=None, out=print):
     """Reprocess items stuck in FAILED / NEEDS_REVIEW (mostly transient — rate-limits, 503s, blips).
@@ -145,25 +153,34 @@ def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
     Dry-run unless execute=True. Returns a summary dict."""
     reprocess_fn = reprocess_fn or pipeline.reprocess
     con = db.connect()
-    q = ("SELECT id, raw_url, status FROM items WHERE status IN ('FAILED','NEEDS_REVIEW')"
-         + ("" if not sideload_only else " AND source_chat_id='sideload'") + " ORDER BY created_at")
+    q = ("SELECT i.id, i.raw_url, i.status, "
+         "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
+         " ORDER BY p.created_at DESC LIMIT 1) AS reason "
+         "FROM items i WHERE i.status IN ('FAILED','NEEDS_REVIEW')"
+         + ("" if not sideload_only else " AND i.source_chat_id='sideload'") + " ORDER BY i.created_at")
     rows = [dict(r) for r in con.execute(q)]
     con.close()
+
+    # Drop permanently-gone items (deleted/removed posts) up front: retrying them is pointless and
+    # they'd otherwise trip the consecutive-non-recovery bail-out before any recoverable item runs.
+    gone = [r for r in rows if _is_gone(r.get("reason"))]
+    live = [r for r in rows if not _is_gone(r.get("reason"))]
 
     before = {}
     for r in rows:
         before[r["status"]] = before.get(r["status"], 0) + 1
-    summary = {"candidates": len(rows), "before": before, "processed": 0,
-               "recovered": 0, "results": {}, "stopped": None}
+    summary = {"candidates": len(rows), "retryable": len(live), "skipped_gone": len(gone),
+               "before": before, "processed": 0, "recovered": 0, "results": {}, "stopped": None}
 
     scope = "sideload only" if sideload_only else "all sources"
     out(f"[retry] {len(rows)} stuck item(s) [{scope}]: "
-        + (", ".join(f"{k}={v}" for k, v in sorted(before.items())) or "none"))
+        + (", ".join(f"{k}={v}" for k, v in sorted(before.items())) or "none")
+        + (f"  — {len(gone)} permanently gone (404/410), skipping" if gone else ""))
     if not execute:
         out("  DRY RUN - add --run to reprocess them.")
         return summary
 
-    targets = rows if limit is None else rows[:limit]
+    targets = live if limit is None else live[:limit]
     out(f"  reprocessing {len(targets)}" + (f" (limit {limit})" if limit is not None else "") + "...")
     consec_429 = consec_fail = 0
     for i, it in enumerate(targets, 1):

@@ -154,5 +154,22 @@ s = sideload.retry(execute=True, delay=0, sideload_only=False,
                    reprocess_fn=lambda iid: rcalls.append(iid) or {"status": "FAILED"}, out=_silent)
 check("retry: bails after 4 consecutive non-recoveries", s["stopped"] == "consecutive_failures" and len(rcalls) == 4)
 
+# retry skips permanently-gone (404/410) items so they can't trip the safety or waste a request
+def _seed_gone(reason):
+    con = db.connect(); iid = db.new_id()
+    con.execute("INSERT INTO items (id,user_id,source_chat_id,raw_url,status,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (iid, config.USER_ID, "sideload", f"https://gone.test/{iid[:6]}", "FAILED", db.now(), db.now()))
+    con.execute("INSERT INTO processing_logs (id,item_id,step,status,detail,created_at) VALUES (?,?,?,?,?,?)",
+                (db.new_id(), iid, "extract", "error", reason, db.now()))
+    con.commit(); con.close(); return iid
+
+g1 = _seed_gone("instagram: Instagram API: HTTP Error 404: Not Found")
+g2 = _seed_gone("HTTP Error 410: Gone")
+rcalls = []
+s = sideload.retry(execute=True, delay=0,
+                   reprocess_fn=lambda iid: rcalls.append(iid) or {"status": "ACTIONABLE"}, out=_silent)
+check("retry: skips permanently-gone 404/410 items", s["skipped_gone"] == 2 and g1 not in rcalls and g2 not in rcalls)
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)
