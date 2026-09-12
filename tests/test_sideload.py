@@ -171,5 +171,17 @@ s = sideload.retry(execute=True, delay=0,
                    reprocess_fn=lambda iid: rcalls.append(iid) or {"status": "ACTIONABLE"}, out=_silent)
 check("retry: skips permanently-gone 404/410 items", s["skipped_gone"] == 2 and g1 not in rcalls and g2 not in rcalls)
 
+# archive-gone: mark the 404/410 items ARCHIVED so they leave the stuck set
+s = sideload.archive_gone(execute=False, out=_silent)
+check("archive-gone dry-run: finds gone items, archives nothing", s["gone"] >= 2 and s["archived"] == 0)
+s = sideload.archive_gone(execute=True, out=_silent)
+check("archive-gone: archives the gone items", s["archived"] >= 2)
+con = db.connect()
+st1 = con.execute("SELECT status FROM items WHERE id=?", (g1,)).fetchone()["status"]
+still_gone = sideload.archive_gone(execute=False, out=_silent)["gone"]
+con.close()
+check("archive-gone: gone item is now ARCHIVED (not FAILED)", st1 == "ARCHIVED")
+check("archive-gone: nothing left to archive on re-run", still_gone == 0)
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)

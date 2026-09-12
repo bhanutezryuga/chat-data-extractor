@@ -217,6 +217,30 @@ def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
     return summary
 
 
+def archive_gone(*, execute=False, sideload_only=True, out=print):
+    """Mark permanently-gone (deleted/removed: HTTP 404/410) stuck items as ARCHIVED so they drop off
+    the failures panel and are never retried. No network, just a status change. Dry-run unless execute."""
+    con = db.connect()
+    q = ("SELECT i.id, i.raw_url, "
+         "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
+         " ORDER BY p.created_at DESC LIMIT 1) AS reason "
+         "FROM items i WHERE i.status IN ('FAILED','NEEDS_REVIEW')"
+         + ("" if not sideload_only else " AND i.source_chat_id='sideload'"))
+    gone = [r for r in (dict(x) for x in con.execute(q)) if _is_gone(r.get("reason"))]
+    out(f"[archive] {len(gone)} permanently-gone (404/410) item(s)"
+        + (" [sideload only]" if sideload_only else " [all sources]"))
+    if not execute:
+        con.close()
+        out("  DRY RUN - add --run to archive them.")
+        return {"gone": len(gone), "archived": 0}
+    for it in gone:
+        con.execute("UPDATE items SET status='ARCHIVED', updated_at=? WHERE id=?", (db.now(), it["id"]))
+        db.log(con, it["id"], "archive", "ok", "permanently gone (404/410) - archived")
+    con.close()
+    out(f"  archived {len(gone)} item(s) -> ARCHIVED (off the failures panel, never retried)")
+    return {"gone": len(gone), "archived": len(gone)}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="python -m app.sideload",
@@ -231,16 +255,20 @@ def main(argv=None):
     p.add_argument("--limit", type=int, default=None, help="max items to process this run")
     p.add_argument("--delay", type=float, default=2.0,
                    help="seconds to sleep between items (be gentle on Gemini/Instagram)")
+    p.add_argument("--archive-gone", action="store_true",
+                   help="mark permanently-gone (404/410) stuck items as ARCHIVED (off the failures panel)")
     p.add_argument("--allow-nonpublic", action="store_true",
                    help="disable the SSRF public-URL pre-check (off by default)")
     a = p.parse_args(argv)
     db.init()
-    if a.retry:
+    if a.archive_gone:
+        archive_gone(execute=a.run, sideload_only=not a.all)
+    elif a.retry:
         retry(execute=a.run, limit=a.limit, delay=a.delay, sideload_only=not a.all)
     elif a.file:
         run(a.file, execute=a.run, limit=a.limit, delay=a.delay, allow_nonpublic=a.allow_nonpublic)
     else:
-        p.error("provide a links file, or use --retry")
+        p.error("provide a links file, or use --retry / --archive-gone")
 
 
 if __name__ == "__main__":
