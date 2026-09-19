@@ -40,7 +40,12 @@
   .sum { color: #94a3b8; font-size: 12px; margin-top: 4px; }
   .reason { color: #f59e0b; font-size: 11px; margin-top: 4px; word-break: break-word; }
   .sec h2 code { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 1px 6px; font-size: 11px; color: #cbd5e1; text-transform: none; letter-spacing: 0; }
-  #attention h2 { color: #f59e0b; }
+  #attention h2 { color: #f59e0b; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .att-actions { display: flex; gap: 8px; align-items: center; font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: auto; }
+  .att-actions button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .att-actions button:hover:not(:disabled) { border-color: #64748b; }
+  .att-actions button:disabled { opacity: .5; cursor: default; }
+  #retry-status { color: #94a3b8; font-weight: 400; }
   .empty { color: #475569; font-size: 13px; }
   footer { text-align: center; color: #64748b; font-size: 11px; padding: 16px; }
 </style>
@@ -57,7 +62,13 @@
 <main>
   <div class="tiles" id="tiles"></div>
   <section class="sec" id="attention" hidden>
-    <h2>⚠ Needs attention (<span id="att-count">0</span>) — run <code>python -m app.sideload --retry --run</code> to retry</h2>
+    <h2>⚠ Needs attention (<span id="att-count">0</span>)
+      <span class="att-actions">
+        <span id="retry-status"></span>
+        <button id="btn-retry" onclick="doRetry()">🔁 Retry now</button>
+        <button id="btn-archive" onclick="doArchiveGone()" hidden>🗑 Archive gone (<span id="gone-count">0</span>)</button>
+      </span>
+    </h2>
     <div class="rec" id="att-list"></div>
   </section>
   <div class="sec"><h2>By category</h2><div class="cats" id="cats"></div></div>
@@ -74,6 +85,26 @@ const safeHref = u => /^https?:\/\//i.test(u||'') ? u : '#';
 const fmt = n => (n||0).toLocaleString();
 
 async function api(p){ const r = await fetch(p); return r.json(); }
+async function apiPost(p, body){ const r = await fetch(p, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body||{}) }); return { ok: r.ok, status: r.status, data: await r.json().catch(()=>({})) }; }
+
+const IS_GONE = reason => /Error 404|Error 410/.test(reason || '');
+
+async function doRetry(){
+  const btn = document.getElementById('btn-retry');
+  btn.disabled = true;
+  const { ok, status, data } = await apiPost('/api/retry', {});
+  document.getElementById('retry-status').textContent =
+    ok ? 'retrying in background…' : (status === 409 ? 'already running…' : (data.error || 'failed to start'));
+  refresh();
+}
+
+async function doArchiveGone(){
+  const btn = document.getElementById('btn-archive');
+  btn.disabled = true;
+  const { ok, data } = await apiPost('/api/archive-gone', {});
+  document.getElementById('retry-status').textContent = ok ? `archived ${data.archived||0}` : (data.error || 'failed');
+  refresh();
+}
 
 function renderUsage(u){
   const el = document.getElementById('usage');
@@ -105,6 +136,21 @@ async function refresh(){
         ${it.reason?`<div class="reason">${esc(it.reason)}</div>`:''}
       </div>`).join('');
     att.hidden = false;
+
+    const running = !!fails.retry_running;
+    document.getElementById('btn-retry').disabled = running;
+    const goneCount = (fails.items||[]).filter(it => IS_GONE(it.reason)).length;
+    const archBtn = document.getElementById('btn-archive');
+    archBtn.hidden = goneCount === 0;
+    archBtn.disabled = running;
+    document.getElementById('gone-count').textContent = goneCount;
+    const statusEl = document.getElementById('retry-status');
+    if (running) {
+      statusEl.textContent = 'retrying in background…';
+    } else if (fails.last_retry && !statusEl.textContent.startsWith('archived')) {
+      const lr = fails.last_retry;
+      statusEl.textContent = `last retry: reprocessed ${lr.processed||0}, recovered ${lr.recovered||0}`;
+    }
   } else {
     att.hidden = true;
   }

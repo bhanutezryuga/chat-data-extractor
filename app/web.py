@@ -8,7 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from . import auth, config, db, logseq, netguard, pipeline, revisit, usage
+from . import auth, config, db, logseq, netguard, pipeline, revisit, sideload, usage
 
 STATIC = config.ROOT / "app" / "static"
 MAX_BODY = 1_000_000   # 1 MB request cap
@@ -16,6 +16,18 @@ MAX_URL = 2048
 
 _login_hits = {}
 _login_lock = threading.Lock()
+
+_retry_lock = threading.Lock()
+_retry_state = {"running": False, "last": None}
+
+
+def _run_retry_bg(limit, sideload_only):
+    try:
+        summary = sideload.retry(execute=True, limit=limit, sideload_only=sideload_only,
+                                 out=lambda *a, **k: None)
+        _retry_state["last"] = summary
+    finally:
+        _retry_state["running"] = False
 
 
 def _rate_ok(ip, limit=8, window=300):
@@ -154,7 +166,9 @@ class Handler(BaseHTTPRequestHandler):
                          "FROM items i WHERE i.status IN ('FAILED','NEEDS_REVIEW') "
                          "ORDER BY i.status, i.created_at DESC LIMIT 300")
             con.close()
-            return self._send(200, {"count": len(rows), "items": rows})
+            return self._send(200, {"count": len(rows), "items": rows,
+                                    "retry_running": _retry_state["running"],
+                                    "last_retry": _retry_state["last"]})
 
         return self._send(404, {"error": "not found"})
 
@@ -189,6 +203,24 @@ class Handler(BaseHTTPRequestHandler):
             res = pipeline.ingest(raw_url=url, raw_text=url, source_chat_id="web",
                                   source_msg_id=db.now() + ":" + url[:40])
             return self._send(200, res or {"error": "duplicate"})
+
+        if path == "/api/retry":       # reprocess stuck FAILED/NEEDS_REVIEW items, in the background
+            with _retry_lock:
+                if _retry_state["running"]:
+                    return self._send(409, {"error": "a retry is already running"})
+                _retry_state["running"] = True
+            limit = body.get("limit")
+            limit = int(limit) if isinstance(limit, (int, float, str)) and str(limit).strip() else None
+            # sideload_only=False: the failures panel shows stuck items from every source, so retry
+            # should cover what's actually shown, not just the CLI's sideload-backlog-only default.
+            threading.Thread(target=_run_retry_bg, args=(limit, bool(body.get("sideload_only"))),
+                             daemon=True).start()
+            return self._send(202, {"started": True})
+
+        if path == "/api/archive-gone":   # mark permanently-404/410 stuck items ARCHIVED (no network)
+            res = sideload.archive_gone(execute=True, sideload_only=bool(body.get("sideload_only")),
+                                        out=lambda *a, **k: None)
+            return self._send(200, res)
 
         return self._send(404, {"error": "not found"})
 
