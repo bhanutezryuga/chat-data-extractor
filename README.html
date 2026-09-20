@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Readme · Chat Data Extractor</title>
+<style>
+:root {
+  --bg: #f8fafc; --fg: #0f172a; --muted: #64748b; --border: #e2e8f0;
+  --card: #ffffff; --code-bg: #f1f5f9; --link: #2563eb; --accent: #0ea5e9;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e2e8f0; --muted: #94a3b8; --border: #334155;
+    --card: #1e293b; --code-bg: #0b1120; --link: #60a5fa; --accent: #38bdf8;
+  }
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); color: var(--fg); }
+body {
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  margin: 0; padding: 0 20px;
+}
+main { max-width: 820px; margin: 0 auto; padding: 40px 0 80px; }
+h1, h2, h3, h4 { line-height: 1.3; scroll-margin-top: 16px; }
+h1 { font-size: 30px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+h2 { font-size: 22px; margin-top: 2.2em; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h3 { font-size: 18px; margin-top: 1.8em; color: var(--accent); }
+p, li { color: var(--fg); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 6px; font-size: 0.88em; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow-x: auto; }
+pre code { background: none; border: none; padding: 0; }
+blockquote { margin: 1em 0; padding: 4px 16px; border-left: 3px solid var(--accent);
+  color: var(--muted); background: var(--card); border-radius: 0 6px 6px 0; }
+table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: 0.95em; }
+th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+th { background: var(--card); }
+tr:nth-child(even) td { background: color-mix(in srgb, var(--card) 50%, transparent); }
+hr { border: none; border-top: 1px solid var(--border); margin: 2.5em 0; }
+ul, ol { padding-left: 1.4em; }
+.doc-nav { font-size: 13px; color: var(--muted); margin-bottom: 24px; }
+.doc-nav a { color: var(--muted); }
+img { max-width: 100%; }
+</style>
+</head>
+<body>
+<main>
+
+<h1 id="chat-data-extractor">Chat Data Extractor</h1>
+<p>Catch links/files shared into a <strong>Telegram bot</strong>, understand what each is and what it's for, turn it into a <strong>trackable task</strong>, and show status on a <strong>dashboard</strong>. <strong>Google Gemini</strong> is the single LLM provider.</p>
+<h2 id="why">Why</h2>
+<p>Useful reels, shorts, videos, PDFs, and articles get lost in chat scrollback and never acted on. This turns them into an actionable backlog.</p>
+<h2 id="how-it-works-one-breath">How it works (one breath)</h2>
+<p>Telegram bot (or the dashboard's "Add link" box) → classify via rules → fetch description (PDFs go to Gemini natively) → Gemini extracts a summary + an actionable task → SQLite → dashboard. Reels/shorts/videos with <strong>no usable description</strong> are analyzed as <strong>video</strong> by Gemini multimodal (YouTube by URL; Instagram/TikTok via optional yt-dlp).</p>
+<h2 id="actions-intent-what-do-i-want-to-do-with-this">Actions / intent ("what do I want to do with this?")</h2>
+<p>Every item gets a <strong>smart-default action</strong> Gemini picks from the content, and you can override it — one action per item:<br />
+- <strong>📝 Note</strong> — a summary to look back on (the default).<br />
+- <strong>📋 List</strong> — surface the enumerated items (books/products/links).<br />
+- <strong>🌐 Translate</strong> — render the content in your language (<code>TRANSLATE_TO</code>, default English). Auto-chosen when the content isn't already in that language.</p>
+<p>Note↔List switching is <strong>instant</strong> (same extraction, different emphasis); Translate runs a translation if one wasn't already made. New actions (Shop/Organize/Share) plug in the same way.</p>
+<p><strong>Two ways to set the action:</strong><br />
+- <strong>Choose first:</strong> send <code>new &lt;link&gt;</code> → the bot shows <strong>[📝 Note] [📋 List] [🌐 Translate] [✨ Auto]</strong>; tap one and <em>then</em> it processes (Auto = let it decide).<br />
+- <strong>Auto + override:</strong> send a bare link → it auto-processes; switch later via the buttons under the result or the <strong>dashboard popup switcher</strong>.</p>
+<p><strong>Each item shows only its action's content</strong> — Translate shows just the translation, List just the list, Note the summary/key-points. Translate target defaults to <strong>English</strong> (<code>TRANSLATE_TO</code>); any non-English content is rendered to it.</p>
+<h2 id="knowledge-base-revisits-so-saves-dont-rot">Knowledge base + revisits (so saves don't rot)</h2>
+<p>A read-later pile is a graveyard unless it comes back to you. Every processed item also becomes a <strong>knowledge record</strong>: Gemini gives it a <strong>title</strong> and a <strong>category</strong> (Reading, Watching, Listening, Learning, Shopping, Reference, Cooking, Travel, Other), and any enumerated <code>list_items</code> (books, products, tools…) are split into a <strong>collection</strong> you can check off (To-Read, Wishlist, …).</p>
+<p>Each item is then queued on a <strong>spaced-repetition schedule</strong> (<code>REVISIT_SCHEDULE</code>, default <code>1,3,7,16,35</code> days). When one comes due, the bot sends a <strong>🔔 revisit</strong> nudge with three buttons:<br />
+- <strong>✅ Revisited</strong> — advance to the next interval (further out each time).<br />
+- <strong>💤 Snooze</strong> — remind again in <code>REVISIT_SNOOZE_DAYS</code>.<br />
+- <strong>🎓 Learned</strong> — stop reminding (archived, 100% progress).</p>
+<p>The dashboard's <strong>🔔 to revisit</strong> chip opens a panel of what's due plus all your collections; every item's popup also has the revisit controls, a progress bar, and its checkable collection. Turn the whole thing off with <code>REVISIT_ENABLED=0</code>. Reminders go to the item's origin chat (or <code>REMIND_CHAT_ID</code>).</p>
+<h2 id="logseq-export-optional">Logseq export (optional)</h2>
+<p>Point <code>LOGSEQ_GRAPH_DIR</code> at a <a href="https://logseq.com">Logseq</a> graph folder and every capture is also written there as a Markdown page — <code>title</code>/<code>category</code>/<code>url</code>/<code>captured</code> properties, the summary, key points, the collection as checkable <code>TODO</code>s, and a <code>SCHEDULED</code> revisit that shows in Logseq's agenda — plus a one-line journal breadcrumb. Categories and collections become <code>[[pages]]</code>, so your saves turn into a linked, backlinked knowledge base. The page's <code>## Notes</code> section is yours and is preserved across re-exports. Off unless <code>LOGSEQ_GRAPH_DIR</code> is set.</p>
+<p><strong>Two-way:</strong> a watcher reads your Logseq edits back into the app — tick a collection item's checkbox and it's marked done in the app; set a page's <code>status::</code> to <code>learned</code> and the app stops reminding you about it. The app keeps the page fresh as its own state changes, so the graph and the app stay in sync (poll interval <code>LOGSEQ_SYNC_SECONDS</code>).</p>
+<p><strong>Bulk export:</strong> backfill an existing graph any time via the <strong>⤓ Export to Logseq</strong> button (in the dashboard's Collections panel), the Telegram <code>/export</code> command, or <code>POST /api/export/logseq</code>. Reprocessing an item preserves your checked-off collection items.</p>
+<h2 id="gemini-usage-no-balance-exists">Gemini usage (no "balance" exists)</h2>
+<p>The Gemini API has <strong>rate limits, not a token balance</strong>. The app <strong>meters</strong> every call's real token count into the <code>gemini_usage</code> table and shows, in the dashboard header: <strong>tokens used today vs your daily budget</strong> (colored bar), <strong>requests today vs requests/day</strong>, and all-time tokens. A budget guard <strong>defers video calls to NEEDS_REVIEW</strong> once you hit the cap. Tune the limits in <code>.env</code> (<code>DAILY_TOKEN_BUDGET</code>, <code>GEMINI_RPD_LIMIT</code>); verify real numbers at <a href="https://ai.google.dev/gemini-api/docs/rate-limits">https://ai.google.dev/gemini-api/docs/rate-limits</a>.</p>
+<h2 id="video-analysis-v2">Video analysis (v2)</h2>
+<ul>
+<li><strong>YouTube</strong> works out of the box — no install (sent to Gemini by URL).</li>
+<li><strong>Instagram / TikTok</strong> need <strong>yt-dlp</strong> (optional). Install it, then hit <strong>Reprocess</strong> on any NEEDS_REVIEW item:<br />
+<code>powershell
+  python -m pip install yt-dlp     # or: winget install yt-dlp</code><br />
+  Without yt-dlp those simply stay in NEEDS_REVIEW — nothing breaks. (ffmpeg optional, only for videos that need stream-merging.)</li>
+</ul>
+<h2 id="instagram-support">Instagram support</h2>
+<p>Instagram serves <strong>nothing</strong> to anonymous clients (no caption/og tags — just a JS shell) and requires a <strong>login</strong> even for yt-dlp. Because the app runs locally, you lend it your Instagram session via a <strong>cookies file</strong>:</p>
+<ol>
+<li>Install <strong>yt-dlp</strong> (once): <code>python -m pip install yt-dlp</code></li>
+<li>In Chrome (logged into Instagram), install the extension <strong>“Get cookies.txt LOCALLY”</strong>.</li>
+<li>Open <a href="https://www.instagram.com">https://www.instagram.com</a>, click the extension → <strong>Export</strong> → save as <code>ig_cookies.txt</code> in the project folder.</li>
+<li>In <code>.env</code> set: <code>INSTAGRAM_COOKIES=C:\Users\&lt;you&gt;\chat-data-extractor\ig_cookies.txt</code></li>
+<li>Restart (<code>python -m app</code>). Now Instagram works:<br />
+   - <strong>Photo / carousel posts</strong> → caption + <strong>all slide images are read by Gemini vision</strong> (lists/books/tips that live <em>in the images</em> are captured into the card). Uses Instagram's web API (<code>app/instagram.py</code>) since yt-dlp can't get IG image URLs.<br />
+   - <strong>Reels / video</strong> → caption + the video is downloaded and analyzed.<br />
+   - <strong>Caption-only</strong> when that's all there is.</li>
+</ol>
+<p>Notes: the cookies file <em>is</em> your Instagram session — keep it private, never commit it; re-export when it expires. <code>--cookies-from-browser chrome</code> is unreliable on Windows (Chrome encrypts cookies / DPAPI), which is why we use the file. Using a personal account for automated fetches is against Instagram’s ToS — keep usage light.</p>
+<hr />
+<h2 id="run-it-locally-current-implementation">Run it locally (current implementation)</h2>
+<p><strong>Requirements:</strong> Python 3.11+ (tested on 3.14). <strong>No <code>pip install</code> needed — standard library only.</strong></p>
+<pre><code class="language-bash"># 1. configure secrets
+copy .env.example .env        # Windows  (cp .env.example .env on mac/linux)
+#   then edit .env and fill in TELEGRAM_BOT_TOKEN and GEMINI_API_KEY
+
+# 2. start the app (web dashboard + Telegram poller)
+python -m app           # or double-click run.bat — leave the window open so it keeps running
+
+# 3. open the dashboard
+#    http://127.0.0.1:8000
+</code></pre>
+<blockquote>
+<p><strong>Keep it running:</strong> launch it in your <em>own</em> terminal (<code>run.bat</code> on Windows, <code>./run.sh</code> on Linux/macOS/Pi) and leave it open — the app runs until you close it / press Ctrl+C. On startup it <strong>auto-requeues</strong> any item left mid-processing by a previous crash, so nothing gets permanently stuck.</p>
+</blockquote>
+<p><strong>Runs anywhere:</strong> pure Python standard library (yt-dlp optional) — Windows, macOS, Linux, <strong>Raspberry Pi</strong>, or an <strong>old Android phone</strong> (via Termux). A home device keeps your residential IP so Instagram/YouTube keep working. 24/7 host guides: <strong><a href="docs/RASPBERRY_PI.html">docs/RASPBERRY_PI.html</a></strong> · <strong><a href="docs/ANDROID_PHONE.html">docs/ANDROID_PHONE.html</a></strong>.</p>
+<ul>
+<li>Without <code>GEMINI_API_KEY</code>, an <strong>offline stub</strong> runs so the app still works (just less smart).</li>
+<li>Without <code>TELEGRAM_BOT_TOKEN</code>, the bot is disabled but the dashboard + "Add link" box still work.</li>
+<li>Reset the database: delete <code>data/app.db</code>.</li>
+</ul>
+<h3 id="get-the-two-credentials">Get the two credentials</h3>
+<ul>
+<li><strong>Telegram bot token</strong> — in Telegram, message <strong>@BotFather</strong> → <code>/newbot</code> → copy the token.</li>
+<li><strong>Gemini API key</strong> — https://aistudio.google.com/apikey (Google AI Studio "Gemini API" key, starts with <code>AIza…</code>).</li>
+</ul>
+<h3 id="code-layout">Code layout</h3>
+<pre><code>app/
+  __main__.py   # entrypoint: python -m app
+  config.py     # reads .env + env vars
+  db.py         # sqlite helpers (one connection per call -&gt; thread-safe)
+  rules.py      # classify a URL via the rules table
+  fetch.py      # oEmbed / readability / PDF download
+  gemini.py     # Gemini over raw HTTPS (+ offline stub)
+  pipeline.py   # ingest -&gt; classify -&gt; fetch -&gt; extract -&gt; task -&gt; knowledge record
+  revisit.py    # spaced-repetition scheduler + due-item scanner
+  logseq.py     # export captures to a Logseq graph (Markdown pages + journal)
+  telegram.py   # long-poll getUpdates (no public URL needed)
+  web.py        # ThreadingHTTPServer: dashboard + JSON API
+  static/index.html   # the dashboard UI
+db/  schema.sql · seed_rules.sql      # reused by the app on startup
+spike/  run.py                        # earlier throwaway proof-of-concept
+</code></pre>
+<hr />
+<h2 id="security-going-online">Security &amp; going online</h2>
+<p>Locally it runs open on <code>127.0.0.1</code> (auth off). <strong>Before exposing it to the internet</strong>, set <code>APP_PASSWORD</code> (and <code>SESSION_SECRET</code>, <code>TELEGRAM_ALLOWED_CHAT_IDS</code>) in <code>.env</code> — then it requires login, the bot only obeys your chat, and outbound fetches are SSRF-guarded. Without <code>APP_PASSWORD</code> the app refuses to bind to anything but localhost. Full runbook (Cloudflare Tunnel + Access, or Tailscale; PC / Raspberry Pi / Android hosting): <strong><a href="DEPLOYMENT.html">DEPLOYMENT.html</a></strong>.</p>
+<h2 id="design-docs">Design docs</h2>
+<p>These were written first (PM / Dev / Architect / DBA hats). They describe a Cloudflare-serverless<br />
+target; the <strong>current build runs the same pipeline + schema locally in Python</strong> instead.<br />
+- <a href="docs/PLAN.html">docs/PLAN.html</a> — scope, milestones, risks <em>(PM)</em><br />
+- <a href="docs/DESIGN.html">docs/DESIGN.html</a> — flows, prompts, API, dashboard <em>(Dev/UX)</em><br />
+- <a href="docs/RULES.html">docs/RULES.html</a> — content-type rules engine <em>(the "purpose" brain)</em><br />
+- <a href="docs/ARCHITECTURE.html">docs/ARCHITECTURE.html</a> — topology + DB schema <em>(Architect/DBA)</em><br />
+- <a href="docs/TEST.html">docs/TEST.html</a> — test strategy <em>(QA)</em></p>
+<h2 id="database">Database</h2>
+<ul>
+<li><a href="db/schema.sql">db/schema.sql</a> — schema (SQLite; also valid D1 DDL)</li>
+<li><a href="db/seed_rules.sql">db/seed_rules.sql</a> — 7 default rules + seed user</li>
+</ul>
+<h2 id="status">Status</h2>
+<p><strong>v1 + v2 working end-to-end</strong>, validated with live Gemini: classify → extract → task → dashboard, including <strong>multimodal video analysis</strong> (YouTube tested live) and <strong>token-usage metering</strong>. Instagram/TikTok video is enabled by installing yt-dlp. Latest: a <strong>PKM layer</strong> — auto-categorized knowledge records, checkable collections, and <strong>spaced-repetition revisit reminders</strong> over the same bot.</p>
+</main>
+</body>
+</html>

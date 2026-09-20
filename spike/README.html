@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spike — proof-of-concept · Chat Data Extractor</title>
+<style>
+:root {
+  --bg: #f8fafc; --fg: #0f172a; --muted: #64748b; --border: #e2e8f0;
+  --card: #ffffff; --code-bg: #f1f5f9; --link: #2563eb; --accent: #0ea5e9;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e2e8f0; --muted: #94a3b8; --border: #334155;
+    --card: #1e293b; --code-bg: #0b1120; --link: #60a5fa; --accent: #38bdf8;
+  }
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); color: var(--fg); }
+body {
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  margin: 0; padding: 0 20px;
+}
+main { max-width: 820px; margin: 0 auto; padding: 40px 0 80px; }
+h1, h2, h3, h4 { line-height: 1.3; scroll-margin-top: 16px; }
+h1 { font-size: 30px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+h2 { font-size: 22px; margin-top: 2.2em; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h3 { font-size: 18px; margin-top: 1.8em; color: var(--accent); }
+p, li { color: var(--fg); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 6px; font-size: 0.88em; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow-x: auto; }
+pre code { background: none; border: none; padding: 0; }
+blockquote { margin: 1em 0; padding: 4px 16px; border-left: 3px solid var(--accent);
+  color: var(--muted); background: var(--card); border-radius: 0 6px 6px 0; }
+table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: 0.95em; }
+th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+th { background: var(--card); }
+tr:nth-child(even) td { background: color-mix(in srgb, var(--card) 50%, transparent); }
+hr { border: none; border-top: 1px solid var(--border); margin: 2.5em 0; }
+ul, ol { padding-left: 1.4em; }
+.doc-nav { font-size: 13px; color: var(--muted); margin-bottom: 24px; }
+.doc-nav a { color: var(--muted); }
+img { max-width: 100%; }
+</style>
+</head>
+<body>
+<main>
+<div class="doc-nav"><a href="../README.html">&larr; Chat Data Extractor</a></div>
+<h1 id="spike-proof-of-concept">Spike — proof-of-concept</h1>
+<p><strong>Throwaway</strong> validation of the core idea before the real Cloudflare/TypeScript build:<br />
+<code>link → classify (rules engine) → fetch description → extract + make a task → dashboard</code>.</p>
+<p>Pure Python stdlib (no pip, no Node). Reuses the <strong>real</strong> schema (<code>db/schema.sql</code>) and<br />
+rules (<code>db/seed_rules.sql</code>), so findings map onto the production design.</p>
+<h2 id="run">Run</h2>
+<pre><code class="language-bash">python spike/run.py demo            # ingest sample URLs -&gt; build dashboard
+python spike/run.py ingest &lt;url&gt;    # ingest one URL
+python spike/run.py dashboard       # rebuild dashboard.html
+python spike/run.py reset           # wipe spike/poc.db
+</code></pre>
+<p>Then open <strong><code>spike/dashboard.html</code></strong> in a browser.</p>
+<h3 id="real-extraction-gemini">Real extraction (Gemini)</h3>
+<pre><code class="language-bash"># PowerShell:  $env:GEMINI_API_KEY=&quot;...&quot;; python spike/run.py reset; python spike/run.py demo
+</code></pre>
+<p>Without a key it runs a deterministic <strong>offline stub</strong> so the pipeline is still demonstrable.<br />
+Use <code>--stub</code> to force offline even with a key.</p>
+<h2 id="what-the-spike-proved">What the spike proved</h2>
+<ul>
+<li>✅ Rules engine routes each URL to the right content type by priority.</li>
+<li>✅ v1 <strong>description-only</strong> logic works: reels/shorts with thin descriptions correctly go to<br />
+<code>NEEDS_REVIEW</code> (video analysis deferred to V2) instead of being downloaded.</li>
+<li>✅ Real content is fetched (oEmbed for YouTube, og/meta + body for articles) and flows into<br />
+  an extraction + a task; everything persists to the real schema and renders on a dashboard.</li>
+<li>✅ Network egress works here, so a real Gemini test is possible with a key.</li>
+</ul>
+<h2 id="findings-fed-back-into-the-design">Findings (fed back into the design)</h2>
+<ol>
+<li><strong>Bug found + fixed:</strong> arxiv-style PDF URLs (<code>/pdf/1706.03762</code>, no <code>.pdf</code> extension) were<br />
+   misclassified as <code>article</code>. Fixed the <code>rule_pdf</code> matcher to also catch <code>arxiv.org/(pdf|abs)/</code>.<br />
+<em>Lesson:</em> the real processor should also confirm type via the response <code>Content-Type</code> header,<br />
+   not URL pattern alone.</li>
+<li><strong>Readability is naive</strong> in the spike (article summaries include nav-menu noise). Real Gemini<br />
+   tolerates this, but the production <code>readability</code> step should strip chrome before sending.</li>
+<li>PDF text isn't parsed in the spike (stdlib limitation) — the real system hands PDF bytes to<br />
+   Gemini natively, which is the designed path.</li>
+</ol>
+<p>This folder is <strong>not</strong> part of the production build (<code>/workers</code>, <code>/dashboard</code>). It exists only to<br />
+de-risk the concept. See <code>../docs/PLAN.html</code> for the real M1–M6 plan.</p>
+</main>
+</body>
+</html>
