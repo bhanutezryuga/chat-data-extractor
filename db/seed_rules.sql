@@ -66,4 +66,13 @@ VALUES
  'Reading material; value is the argument/insight.',
  'readability', 'gemini_text',
  'Summarize the content in one short paragraph, list up to 3 key points, and propose ONE concrete actionable task (title, why it matters, first step). Tag the topic. Return as JSON.',
- 90, 1);
+ 90, 1),
+
+-- Not reached via classify() (enabled=0, matcher never matches) — exists only so items.rule_id's
+-- foreign key is satisfied for manually-typed notes (pipeline.create_note / Telegram `/note`).
+('rule_note', 'Manual note',
+ '(?!)', 'url_regex', 'note',
+ 'A personal note the user chose to write down directly (not fetched from a link).',
+ 'text', 'gemini_text',
+ 'Give this note a short, specific title (not a full sentence) and classify it into the best-fitting category. Keep the summary and key points brief — they will not be shown; the note text itself is preserved verbatim on the saved page.',
+ 999, 0);

@@ -254,6 +254,7 @@ def handle_update(u):
                      "`/review` → what's due to revisit this week.\n"
                      "`/retry` → reprocess stuck/failed items.\n"
                      "`/archivegone` → clear stuck items that are permanently gone (404/410).\n"
+                     "`/note <text>` → jot a personal note, no link needed.\n"
                      + ("`/export` → write everything to your Logseq graph.\n" if logseq.active() else "")
                      + f"Your chat id: {chat_id}  (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)\n"
                      f"Dashboard: http://{config.HOST}:{config.PORT}")
@@ -292,6 +293,23 @@ def handle_update(u):
     if low.startswith("/archivegone"):     # clear permanently-404/410 stuck items
         res = sideload.archive_gone(execute=True, sideload_only=False, out=lambda *a, **k: None)
         send_message(chat_id, f"🗑 Archived {res['archived']} permanently-gone item(s).")
+        return
+
+    if low.startswith("/note"):            # jot a manual note — no link needed
+        body = text[len("/note"):].strip()
+        if not body:
+            send_message(chat_id, "Send your note right after the command, e.g.\n"
+                                  "/note Ping the landlord about the leak before Friday.")
+            return
+        r = pipeline.create_note(body, source_chat_id=str(chat_id), source_msg_id=f"note{msg_id}")
+        if not r:
+            send_message(chat_id, "Empty note — nothing saved.")
+        elif r["status"] == "DUPLICATE":
+            send_message(chat_id, "🔁 A very similar note is already saved.")
+        else:
+            tail = f" [{r['category']}]" if r.get("category") else ""
+            send_message(chat_id, f"📝 Note saved — {r.get('title') or 'untitled'}{tail}"
+                         + ("\nWritten to your Logseq graph." if logseq.active() else ""))
         return
 
     # `new <link>` (or `/new`) — choose the action BEFORE processing

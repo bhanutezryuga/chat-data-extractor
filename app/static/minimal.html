@@ -38,7 +38,9 @@
   .status { font-weight: 700; font-size: 10px; }
   .item a { color: #60a5fa; font-size: 12px; text-decoration: none; word-break: break-all; }
   .sum { color: #94a3b8; font-size: 12px; margin-top: 4px; }
-  .reason { color: #f59e0b; font-size: 11px; margin-top: 4px; word-break: break-word; }
+  .reason { font-size: 11px; margin-top: 4px; word-break: break-word; font-weight: 600; }
+  .reason-raw { color: #475569; font-size: 10px; margin-top: 2px; word-break: break-word; font-family: ui-monospace, Consolas, monospace; }
+  .arch-toggle { font-weight: 400; color: #64748b; text-transform: none; letter-spacing: 0; margin-left: 8px; }
   .sec h2 code { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 1px 6px; font-size: 11px; color: #cbd5e1; text-transform: none; letter-spacing: 0; }
   #attention h2 { color: #f59e0b; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .att-actions { display: flex; gap: 8px; align-items: center; font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: auto; }
@@ -73,6 +75,10 @@
   </section>
   <div class="sec"><h2>By category</h2><div class="cats" id="cats"></div></div>
   <div class="sec"><h2>Recent captures</h2><div class="rec" id="recent"></div></div>
+  <section class="sec" id="archived-sec" hidden>
+    <h2 style="cursor:pointer" onclick="toggleArchived()">🗑 Archived (<span id="arch-count">0</span>)<span class="arch-toggle" id="arch-toggle">▸ show</span></h2>
+    <div class="rec" id="archived-list" hidden></div>
+  </section>
 </main>
 
 <footer id="foot">Loading…</footer>
@@ -80,6 +86,9 @@
 <script>
 const COLOR = { ACTIONABLE:'#16a34a', PROCESSING:'#ca8a04', NEW:'#64748b',
                 NEEDS_REVIEW:'#d97706', FAILED:'#dc2626', AWAITING_ACTION:'#7c3aed' };
+const ERR_COLOR = { gone:'#64748b', rate_limited:'#f59e0b', unavailable:'#f59e0b', timeout:'#f59e0b',
+                    login_expired:'#dc2626', blocked:'#dc2626', budget:'#38bdf8',
+                    unsupported:'#64748b', no_content:'#64748b', error:'#dc2626' };
 const esc = s => (s==null?'':String(s)).replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
 const safeHref = u => /^https?:\/\//i.test(u||'') ? u : '#';
 const fmt = n => (n||0).toLocaleString();
@@ -87,7 +96,31 @@ const fmt = n => (n||0).toLocaleString();
 async function api(p){ const r = await fetch(p); return r.json(); }
 async function apiPost(p, body){ const r = await fetch(p, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body||{}) }); return { ok: r.ok, status: r.status, data: await r.json().catch(()=>({})) }; }
 
-const IS_GONE = reason => /Error 404|Error 410/.test(reason || '');
+let archivedExpanded = false;
+let _lastArchived = null;
+
+function toggleArchived(){ archivedExpanded = !archivedExpanded; renderArchived(_lastArchived); }
+
+function renderArchived(arch){
+  _lastArchived = arch;
+  const sec = document.getElementById('archived-sec');
+  if (!arch || arch.count === 0) { sec.hidden = true; return; }
+  sec.hidden = false;
+  document.getElementById('arch-count').textContent = arch.count;
+  document.getElementById('arch-toggle').textContent = archivedExpanded ? '▾ hide' : '▸ show';
+  const list = document.getElementById('archived-list');
+  list.hidden = !archivedExpanded;
+  if (archivedExpanded) {
+    list.innerHTML = (arch.items||[]).slice(0,50).map(it => `
+      <div class="item">
+        <div class="top">
+          <span class="t">${esc(it.title || '(no title)')}${it.category?`<span class="catbadge">${esc(it.category)}</span>`:''}</span>
+        </div>
+        ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
+        ${it.error_label?`<div class="reason" style="color:${ERR_COLOR[it.error_category]||'#64748b'}">${esc(it.error_label)}</div>`:''}
+      </div>`).join('');
+  }
+}
 
 async function doRetry(){
   const btn = document.getElementById('btn-retry');
@@ -119,8 +152,10 @@ function renderUsage(u){
 }
 
 async function refresh(){
-  const [stats, use, items, fails] = await Promise.all([api('/api/stats'), api('/api/usage'), api('/api/items'), api('/api/failures')]);
+  const [stats, use, items, fails, arch] = await Promise.all(
+    [api('/api/stats'), api('/api/usage'), api('/api/items'), api('/api/failures'), api('/api/archived')]);
   renderUsage(use);
+  renderArchived(arch);
 
   // "Needs attention" — shown ONLY when there are FAILED / NEEDS_REVIEW items
   const att = document.getElementById('attention');
@@ -133,13 +168,14 @@ async function refresh(){
           <span class="status" style="color:${COLOR[it.status]||'#888'}">${esc(it.status)}</span>
         </div>
         ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
-        ${it.reason?`<div class="reason">${esc(it.reason)}</div>`:''}
+        ${it.error_label?`<div class="reason" style="color:${ERR_COLOR[it.error_category]||'#f59e0b'}">${esc(it.error_label)}</div>`:''}
+        ${it.reason?`<div class="reason-raw">${esc(it.reason)}</div>`:''}
       </div>`).join('');
     att.hidden = false;
 
     const running = !!fails.retry_running;
     document.getElementById('btn-retry').disabled = running;
-    const goneCount = (fails.items||[]).filter(it => IS_GONE(it.reason)).length;
+    const goneCount = (fails.items||[]).filter(it => it.error_category === 'gone').length;
     const archBtn = document.getElementById('btn-archive');
     archBtn.hidden = goneCount === 0;
     archBtn.disabled = running;

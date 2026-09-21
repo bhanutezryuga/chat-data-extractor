@@ -20,7 +20,7 @@ import argparse
 import hashlib
 import time
 
-from . import config, db, instagram, netguard, pipeline, usage
+from . import config, db, failures, instagram, netguard, pipeline, usage
 
 
 # ---- parsing --------------------------------------------------------------
@@ -141,8 +141,7 @@ def _is_gone(reason):
     """A permanently unrecoverable failure — a deleted/removed post (HTTP 404 Not Found / 410 Gone).
     Retrying these only wastes a request and, since they always re-fail, would trip the
     consecutive-non-recovery safety before the recoverable items are even reached."""
-    r = reason or ""
-    return "Error 404" in r or "Error 410" in r
+    return failures.classify(reason)[0] == "gone"
 
 
 def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
