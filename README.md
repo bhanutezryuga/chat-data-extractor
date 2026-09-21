@@ -42,10 +42,15 @@ Point `LOGSEQ_GRAPH_DIR` at a [Logseq](https://logseq.com) graph folder and ever
 
 **Bulk export / backfill:** push everything currently in the database to Logseq via the Telegram `/export` command, or backfill a batch of links from a text file (see **Bulk sideload** below). Reprocessing an item preserves your checked-off collection items.
 
+## Manual notes
+Not everything worth keeping is a link. Send `/note <text>` in Telegram to jot something down directly — Gemini gives it a title and category so it's organized alongside everything else, but **the note text itself is always kept verbatim**: never paraphrased, turned into a list, or dropped for being short. It gets a Logseq page like any other capture.
+
 ## Recovering stuck items (retry / archive)
-Items that hit a transient failure (rate-limits, 503s, an expired Instagram session) land in **FAILED** or **NEEDS_REVIEW** instead of silently vanishing. They show up under **⚠ Needs attention** on the dashboard, with:
+Items that hit a transient failure (rate-limits, 503s, an expired Instagram session) land in **FAILED** or **NEEDS_REVIEW** instead of silently vanishing. They show up under **⚠ Needs attention** on the dashboard with a **clear reason** — not just the raw status — e.g. "Instagram session expired — re-export ig_cookies.txt" or "Post deleted or removed", alongside the raw technical detail if you want it. From there:
 - **🔁 Retry now** — reprocess every stuck item in the background (gentle: one at a time, bails out on an Instagram logout, repeated rate-limits, or the daily budget).
 - **🗑 Archive gone (N)** — clear out items that are permanently unrecoverable (deleted/removed posts — HTTP 404/410) so they stop cluttering the panel.
+
+Archived items aren't just gone without a trace — a collapsible **🗑 Archived** section on the dashboard (collapsed by default) lists what was archived and why.
 
 Same two actions work from Telegram: `/retry` and `/archivegone`. Or from the command line for finer control (`--limit`, `--delay`, `--all` to include every source, not just sideloaded ones):
 ```bash
@@ -124,10 +129,11 @@ app/
   rules.py      # classify a URL via the rules table
   fetch.py      # oEmbed / readability / PDF download
   gemini.py     # Gemini over raw HTTPS (+ offline stub)
-  pipeline.py   # ingest -> classify -> fetch -> extract -> task -> knowledge record
+  pipeline.py   # ingest -> classify -> fetch -> extract -> task -> knowledge record; also manual notes
   revisit.py    # spaced-repetition scheduler + digest/per-item reminders
   logseq.py     # export captures to a Logseq graph (Markdown pages + journal)
   sideload.py   # bulk-import from a file; retry/archive stuck items (CLI + used by the dashboard)
+  failures.py   # turns a raw error string into a human category + label (dashboard/API)
   telegram.py   # long-poll getUpdates (no public URL needed)
   web.py        # ThreadingHTTPServer: dashboard + JSON API
   static/minimal.html   # the dashboard UI
@@ -153,4 +159,4 @@ These were written first (PM / Dev / Architect / DBA hats), describing a Cloudfl
 - [db/seed_rules.sql](db/seed_rules.sql) — 7 default rules + seed user
 
 ## Status
-**Live and in daily use.** Captures flow Telegram → Gemini → Logseq, with recipe capture, content dedup, and lean list pages. A minimal dashboard shows capture/usage stats and a **Needs attention** panel — with one-click **retry** and **archive** — for anything stuck. Bulk backfill and stuck-item recovery are also available via the `python -m app.sideload` CLI. Video analysis (YouTube out of the box; Instagram/TikTok via optional yt-dlp) and token-usage metering are both validated live. Docs were migrated from Markdown to HTML (this README is the one deliberate exception, so GitHub still renders it as the repo's landing page).
+**Live and in daily use.** Captures flow Telegram → Gemini → Logseq, with recipe capture, content dedup, and lean list pages. A minimal dashboard shows capture/usage stats, an **Archived** view, and a **Needs attention** panel — with clear failure reasons and one-click **retry**/**archive** — for anything stuck. Manual notes (`/note <text>`) capture things with no link involved. Bulk backfill and stuck-item recovery are also available via the `python -m app.sideload` CLI. Video analysis (YouTube out of the box; Instagram/TikTok via optional yt-dlp) and token-usage metering are both validated live. Docs were migrated from Markdown to HTML (this README is the one deliberate exception, so GitHub still renders it as the repo's landing page).
