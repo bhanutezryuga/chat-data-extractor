@@ -31,25 +31,60 @@ def _call(method, **params):
         return json.loads(r.read().decode())
 
 
-def send_message(chat_id, text, kbd=None):
-    params = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
-    if kbd:
-        params["reply_markup"] = json.dumps(kbd)
+TG_MAX_TEXT = 4096     # Telegram rejects message text longer than this
+
+
+def _chunks(text, limit=TG_MAX_TEXT):
+    """Split text into pieces <= limit, preferring to break at a newline."""
+    text = text or ""
+    out = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit + 1)
+        if cut <= 0:
+            out.append(text[:limit])
+            text = text[limit:]
+        else:
+            out.append(text[:cut])
+            text = text[cut + 1:]
+    out.append(text)
+    return out
+
+
+def _safe_call(method, chat_id, **params):
+    """Call the Bot API; log and return False on any failure (exception or ok:false)."""
     try:
-        _call("sendMessage", **params)
-    except Exception:
-        pass
+        res = _call(method, chat_id=chat_id, **params)
+    except Exception as e:
+        print(f"  [telegram] {method} failed for chat {chat_id}: {str(e)[:300]}")
+        return False
+    if isinstance(res, dict) and res.get("ok") is False:
+        print(f"  [telegram] {method} failed for chat {chat_id}: {str(res.get('description'))[:300]}")
+        return False
+    return True
+
+
+def send_message(chat_id, text, kbd=None):
+    """Send text (split into <=4096-char messages if needed; the keyboard rides on the last one).
+    Returns True only if every part was sent; failures are logged, never raised."""
+    parts = _chunks(text)
+    ok = True
+    for i, part in enumerate(parts):
+        params = {"text": part, "disable_web_page_preview": True}
+        if kbd and i == len(parts) - 1:
+            params["reply_markup"] = json.dumps(kbd)
+        ok = _safe_call("sendMessage", chat_id, **params) and ok
+    return ok
 
 
 def edit_message_text(chat_id, message_id, text, kbd=None):
-    params = {"chat_id": chat_id, "message_id": message_id, "text": text,
-              "disable_web_page_preview": True}
+    """Edit a message in place (text truncated to Telegram's limit). Returns True on success."""
+    text = text or ""
+    if len(text) > TG_MAX_TEXT:
+        text = text[:TG_MAX_TEXT - 1] + "…"
+    params = {"message_id": message_id, "text": text, "disable_web_page_preview": True}
     if kbd:
         params["reply_markup"] = json.dumps(kbd)
-    try:
-        _call("editMessageText", **params)
-    except Exception:
-        pass
+    return _safe_call("editMessageText", chat_id, **params)
 
 
 def _action_kbd(item_id, active):
@@ -86,10 +121,11 @@ def _reminder_chat(item):
 
 
 def send_reminder(item):
-    """Send a spaced-repetition revisit nudge for one item (called by the scheduler)."""
+    """Send a spaced-repetition revisit nudge for one item (called by the scheduler).
+    Returns True only if it was delivered, so the scheduler can retry a dropped one."""
     chat_id = _reminder_chat(item)
     if not chat_id:
-        return
+        return False
     title = item.get("title") or item.get("content_type") or "a saved item"
     cat = item.get("category")
     n = item.get("revisit_count") or 0
@@ -99,32 +135,49 @@ def send_reminder(item):
         body += f"\n🏷 {cat}"
     if item.get("raw_url"):
         body += f"\n{item['raw_url']}"
-    send_message(chat_id, body, _revisit_kbd(item["id"]))
+    return send_message(chat_id, body, _revisit_kbd(item["id"]))
+
+
+def _digest_card(item):
+    """One compact digest card: title, category, URL (kept well under Telegram's limit). It has
+    no blank line, so the `rv|` callback's in-place edit keeps the whole card as its base text."""
+    title = (item.get("title") or item.get("content_type") or "a saved item").replace("\n", " ")
+    text = f"📌 {title[:300]}"
+    if item.get("category"):
+        text += f"\n🏷 {item['category']}"
+    if item.get("raw_url"):
+        text += f"\n{item['raw_url'][:2000]}"
+    return text
 
 
 def send_review_digest(chat_id=None):
-    """Send one weekly-review message listing items due to revisit. Returns the count.
-    chat_id=None (the auto weekly send) goes to REMIND_CHAT_ID / the first allow-listed chat."""
-    con = db.connect()
-    rows = [dict(r) for r in revisit.due_within(con, config.DIGEST_LOOKAHEAD_DAYS)]
-    con.close()
+    """Send the weekly review: a short header, then one card per due item (up to
+    DIGEST_MAX_CARDS) carrying Revisited/Snooze/Learned buttons (handled by the `rv|` callback).
+    Items not shown this time rotate in next time (revisit.review_queue orders by least-recently
+    shown). chat_id=None (the auto weekly send) goes to REMIND_CHAT_ID / the first allow-listed
+    chat. Returns True if the review was delivered (header + at least one card, or the
+    "nothing due" note), False otherwise — so the weekly loop can retry a dropped digest."""
     chat = chat_id or config.REMIND_CHAT_ID or next(iter(config.TELEGRAM_ALLOWED_CHAT_IDS), None)
     if not chat:
-        return 0
+        return False
+    con = db.connect()
+    total = revisit.review_count(con)
+    rows = [dict(r) for r in revisit.review_queue(con, config.DIGEST_MAX_CARDS)]
+    con.close()
     if not rows:
-        send_message(chat, "📚 Weekly review — nothing due right now. ✅")
-        return 0
-    lines = [f"📚 Weekly review — {len(rows)} to revisit\n"]
-    for i, r in enumerate(rows[:20], 1):
-        cat = f"  [{r['category']}]" if r.get("category") else ""
-        lines.append(f"{i}. {r.get('title') or r.get('content_type') or 'item'}{cat}")
-        if r.get("raw_url"):
-            lines.append(f"   {r['raw_url']}")
-    if len(rows) > 20:
-        lines.append(f"\n+{len(rows) - 20} more")
-    lines.append("\nOpen Logseq to review.")
-    send_message(chat, "\n".join(lines))
-    return len(rows)
+        return send_message(chat, "📚 Weekly review — nothing due right now. ✅")
+    head = f"📚 Weekly review — {total} due"
+    if total > len(rows):
+        head += (f", showing {len(rows)}.\nThe other {total - len(rows)} rotate in next time — "
+                 "send /review for the next batch.")
+    else:
+        head += "."
+    head += "\nTap ✅ Revisited / 💤 Snooze / 🎓 Learned on each card."
+    if not send_message(chat, head):
+        return False
+    shown = [r["id"] for r in rows if send_message(chat, _digest_card(r), _revisit_kbd(r["id"]))]
+    revisit.mark_shown(shown)
+    return bool(shown)
 
 
 def _format_result(item_id):

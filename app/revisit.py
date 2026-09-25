@@ -29,13 +29,30 @@ def _progress(stage):
     return min(100, int(round(100 * stage / max(1, len(config.REVISIT_SCHEDULE)))))
 
 
+def is_study(category):
+    """Only *study* items are reviewed. The study set is the single config value
+    LOGSEQ_TODO_CATEGORIES — the same one that decides which items get a `TODO Revisit` in
+    Logseq — so the schedule, the digest and Logseq all agree on what is reviewable."""
+    return (category or "") in config.LOGSEQ_TODO_CATEGORIES
+
+
+def _study_sql():
+    """(sql, args) restricting a query on `items` to study categories. Applied at query time,
+    so rows scheduled before this rule existed simply drop out — no destructive migration."""
+    cats = sorted(config.LOGSEQ_TODO_CATEGORIES)
+    if not cats:
+        return "0", []
+    return f"category IN ({','.join('?' * len(cats))})", cats
+
+
 def schedule_new(con, item_id):
-    """Queue an item for its first revisit — but only if revisit is on, the item is still
-    active, and it isn't already scheduled (so reprocessing never resets a user's progress)."""
+    """Queue an item for its first revisit — but only if revisit is on, the item is a study item
+    (see is_study), still active, and not already scheduled (so reprocessing never resets progress)."""
     if not config.REVISIT_ENABLED:
         return
-    row = con.execute("SELECT deadline, learn_status FROM items WHERE id=?", (item_id,)).fetchone()
-    if not row or row["learn_status"] != "active" or row["deadline"]:
+    row = con.execute("SELECT deadline, learn_status, category FROM items WHERE id=?",
+                      (item_id,)).fetchone()
+    if not row or row["learn_status"] != "active" or row["deadline"] or not is_study(row["category"]):
         return
     con.execute("UPDATE items SET revisit_stage=0, deadline=?, updated_at=? WHERE id=?",
                 (_future(_interval_days(0)), db.now(), item_id))
@@ -61,8 +78,11 @@ def mark(item_id, action):
         con.execute("UPDATE items SET learn_status='learned', progress=100, deadline=NULL, "
                     "updated_at=? WHERE id=?", (db.now(), item_id))
     elif action == "snoozed":
-        con.execute("UPDATE items SET deadline=?, reminded_at=NULL, updated_at=? WHERE id=?",
-                    (_future(config.REVISIT_SNOOZE_DAYS), db.now(), item_id))
+        # reminded_at=now (not NULL): it still re-reminds once the snooze elapses (reminded_at <
+        # deadline), but in the digest's least-recently-shown order it goes to the back, so an
+        # item that keeps getting snoozed can't hog the front of every review (#13).
+        con.execute("UPDATE items SET deadline=?, reminded_at=?, updated_at=? WHERE id=?",
+                    (_future(config.REVISIT_SNOOZE_DAYS), db.now(), db.now(), item_id))
     else:  # revisited: advance a stage and re-arm
         stage = (it["revisit_stage"] or 0) + 1
         con.execute("UPDATE items SET revisit_stage=?, revisit_count=revisit_count+1, deadline=?, "
@@ -79,26 +99,76 @@ def mark(item_id, action):
 
 
 def due(con, limit=50):
-    """Active items whose revisit deadline has passed and that we haven't already reminded
-    for this cycle. (deadline is fixed-width UTC text, so string comparison sorts correctly.)"""
+    """Active study items whose revisit deadline has passed and that we haven't already reminded
+    for this cycle — the peritem scheduler's queue. (deadline is fixed-width UTC text, so string
+    comparison sorts correctly.)"""
+    study, args = _study_sql()
     return con.execute(
-        "SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
+        f"SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL AND {study} "
         "AND deadline <= ? AND (reminded_at IS NULL OR reminded_at < deadline) "
-        "ORDER BY deadline LIMIT ?", (db.now(), limit)).fetchall()
+        "ORDER BY deadline LIMIT ?", (*args, db.now(), limit)).fetchall()
 
 
 def due_count(con):
+    study, args = _study_sql()
     return con.execute(
-        "SELECT count(*) n FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
-        "AND deadline <= ?", (db.now(),)).fetchone()["n"]
+        f"SELECT count(*) n FROM items WHERE learn_status='active' AND deadline IS NOT NULL AND {study} "
+        "AND deadline <= ?", (*args, db.now())).fetchone()["n"]
 
 
 def due_within(con, days, limit=200):
-    """Active items due to revisit within the next `days` (including overdue) — the weekly-review set."""
-    horizon = _future(days)
+    """Active study items due to revisit within the next `days` (including overdue) — the weekly-review set."""
+    study, args = _study_sql()
     return con.execute(
-        "SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
-        "AND deadline <= ? ORDER BY deadline LIMIT ?", (horizon, limit)).fetchall()
+        f"SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL AND {study} "
+        "AND deadline <= ? ORDER BY deadline LIMIT ?", (*args, _future(days), limit)).fetchall()
+
+
+def _review_where():
+    """(sql, args) for THE definition of "due for review", shared by the weekly digest, `/review`
+    and the dashboard's "Due to review" tile/list (so their counts always agree):
+
+      an active, study-category item whose deadline has passed, OR whose deadline falls within
+      the next DIGEST_LOOKAHEAD_DAYS and that the user hasn't acted on (revisited/snoozed) within
+      that window.
+
+    The second clause keeps the weekly look-ahead (so items coming due mid-week aren't a week
+    late) without re-listing something the user just revisited — it only returns once its new
+    deadline actually passes."""
+    study, args = _study_sql()
+    now = db.now()
+    sql = (f"learn_status='active' AND deadline IS NOT NULL AND {study} AND ("
+           "deadline <= ? OR (deadline <= ? AND NOT EXISTS (SELECT 1 FROM revisits r "
+           "WHERE r.item_id=items.id AND r.created_at > ?)))")
+    return sql, [*args, now, _future(config.DIGEST_LOOKAHEAD_DAYS), _future(-config.DIGEST_LOOKAHEAD_DAYS)]
+
+
+def review_queue(con, limit=None):
+    """Items due for review (see _review_where), least-recently-shown first: never-shown items,
+    then those shown longest ago, then by deadline — so successive digests rotate through the
+    whole backlog instead of repeating the oldest few."""
+    where, args = _review_where()
+    q = (f"SELECT * FROM items WHERE {where} "
+         "ORDER BY (reminded_at IS NOT NULL), reminded_at, deadline")
+    if limit:
+        q += " LIMIT ?"
+        args.append(int(limit))
+    return con.execute(q, args).fetchall()
+
+
+def review_count(con):
+    where, args = _review_where()
+    return con.execute(f"SELECT count(*) n FROM items WHERE {where}", args).fetchone()["n"]
+
+
+def mark_shown(item_ids):
+    """Record that these items were delivered in a digest (drives the rotation order)."""
+    if not item_ids:
+        return
+    con = db.connect()
+    con.executemany("UPDATE items SET reminded_at=? WHERE id=?", [(db.now(), i) for i in item_ids])
+    con.commit()
+    con.close()
 
 
 def _mark_reminded(item_id):
@@ -112,19 +182,25 @@ def _scan_loop(send_reminder):
     print("  [revisit] scheduler started"
           f" (schedule {list(config.REVISIT_SCHEDULE)} days, scan every {config.REVISIT_CHECK_SECONDS}s)")
     while True:
-        try:
-            con = db.connect()
-            rows = due(con)
-            con.close()
-            for it in rows:
-                try:
-                    send_reminder(dict(it))
-                    _mark_reminded(it["id"])
-                except Exception as e:
-                    print(f"  [revisit] reminder error for {it['id']}: {e}")
-        except Exception as e:
-            print(f"  [revisit] scan error: {e}")
+        _scan_once(send_reminder)
         time.sleep(max(60, config.REVISIT_CHECK_SECONDS))
+
+
+def _scan_once(send_reminder):
+    """One scheduler pass. An item is marked reminded only if `send_reminder` reports success
+    (truthy), so a dropped reminder is retried on the next scan instead of being lost."""
+    try:
+        con = db.connect()
+        rows = due(con)
+        con.close()
+        for it in rows:
+            try:
+                if send_reminder(dict(it)):
+                    _mark_reminded(it["id"])
+            except Exception as e:
+                print(f"  [revisit] reminder error for {it['id']}: {e}")
+    except Exception as e:
+        print(f"  [revisit] scan error: {e}")
 
 
 def start_scheduler(send_reminder):
@@ -168,13 +244,21 @@ def _digest_loop(send_digest):
     print(f"  [revisit] weekly digest mode (every {config.DIGEST_INTERVAL_DAYS}d, "
           f"items due within {config.DIGEST_LOOKAHEAD_DAYS}d)")
     while True:
-        try:
-            if _digest_due():
-                send_digest()
-                set_meta("last_digest_sent", db.now())
-        except Exception as e:
-            print(f"  [revisit] digest error: {e}")
+        _digest_tick(send_digest)
         time.sleep(max(300, config.REVISIT_CHECK_SECONDS))
+
+
+def _digest_tick(send_digest):
+    """One digest-loop pass. `last_digest_sent` advances only when `send_digest()` reports
+    success (truthy); a failed send is retried on the next tick instead of a week later."""
+    try:
+        if _digest_due():
+            if send_digest():
+                set_meta("last_digest_sent", db.now())
+            else:
+                print("  [revisit] digest not delivered — will retry")
+    except Exception as e:
+        print(f"  [revisit] digest error: {e}")
 
 
 def start_digest(send_digest):
