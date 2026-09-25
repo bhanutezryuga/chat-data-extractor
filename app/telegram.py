@@ -10,7 +10,7 @@ import time
 import urllib.request
 from urllib.parse import urlencode
 
-from . import config, db, logseq, pipeline, revisit, sideload, web
+from . import config, db, failures, logseq, pipeline, revisit, sideload, web
 
 API = "https://api.telegram.org/bot{token}/{method}"
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -191,14 +191,17 @@ def _handle_callback(cb):
     if kind == "new":                                   # pre-process choice: process now with this action
         _call("answerCallbackQuery", callback_query_id=cb_id, text=f"Processing as {action}…")
         try:
-            pipeline.process_pending(item_id, action)
+            res = pipeline.process_pending(item_id, action)
         except Exception as e:
             if chat_id and mid:
-                edit_message_text(chat_id, mid, f"⚠️ Failed: {e}")
+                edit_message_text(chat_id, mid, f"⚠️ Failed: {e}\nSend /retry to try again.")
             return
         if chat_id and mid:
-            text, kbd = _format_result(item_id)
-            edit_message_text(chat_id, mid, text or "done", kbd)
+            if (res or {}).get("status") in ("FAILED", "NEEDS_REVIEW"):
+                edit_message_text(chat_id, mid, _ack(item_id))
+            else:
+                text, kbd = _format_result(item_id)
+                edit_message_text(chat_id, mid, text or "done", kbd)
         return
 
     res = pipeline.set_action(item_id, action)          # post-process override
@@ -220,17 +223,23 @@ def _download_file(file_id, limit=20_000_000):
         return r.read(limit)
 
 
-def _ack(results):
-    lines = []
-    for r in results:
-        if not r:
-            continue
-        icon = {"ACTIONABLE": "✅", "NEEDS_REVIEW": "🔎", "FAILED": "⚠️"}.get(r["status"], "•")
-        line = f"{icon} {r.get('content_type') or '?'} → {r['status']}"
-        if r.get("task"):
-            line += f"\n   📌 {r['task']}"
-        lines.append(line)
-    return "\n".join(lines) if lines else None
+def _ack(item_id):
+    """Plain-language reply for a capture that ended FAILED / NEEDS_REVIEW: why (the same
+    failures.classify label the dashboard shows) plus a concrete next step."""
+    con = db.connect()
+    it = con.execute(
+        "SELECT i.status, i.content_type, i.raw_url, "
+        "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
+        " ORDER BY p.created_at DESC LIMIT 1) AS reason FROM items i WHERE i.id=?", (item_id,)).fetchone()
+    con.close()
+    if not it:
+        return "⚠️ Couldn't save this — send /retry to try again."
+    category, label = failures.classify(it["reason"])
+    what = it["content_type"] if it["content_type"] not in (None, "", "unknown") else "link"
+    head = (f"⚠️ Couldn't save this {what}" if it["status"] == "FAILED"
+            else f"🔎 Couldn't read this {what}")
+    return (f"{head} — {label.rstrip('.')}.\n{failures.next_step(category)}"
+            + (f"\n{it['raw_url']}" if it["raw_url"] else ""))
 
 
 def handle_update(u):
@@ -359,8 +368,7 @@ def handle_update(u):
             text_out, kbd = _format_result(r["id"])
             send_message(chat_id, text_out or "✅ done", kbd)
         else:
-            icon = {"NEEDS_REVIEW": "🔎", "FAILED": "⚠️"}.get(r["status"], "•")
-            send_message(chat_id, f"{icon} {r.get('content_type') or '?'} → {r['status']}")
+            send_message(chat_id, _ack(r["id"]))
     if not sent and not doc:
         send_message(chat_id, "I didn't find a link or PDF in that message. Send me a URL or a PDF file.")
 
