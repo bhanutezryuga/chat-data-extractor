@@ -461,6 +461,49 @@ def ingest(raw_url=None, raw_text=None, attachment=None,
     return res
 
 
+NOTE_RULE = {"id": "rule_note", "name": "Manual note", "content_type": "note",
+             "purpose": "A personal note the user chose to type and save directly (not fetched from a link).",
+             "action_template": ("Give this note a short, specific title (not a full sentence) and "
+                                  "classify it into the best-fitting category. Keep the summary and "
+                                  "key points brief — they will not be shown; the note text itself is "
+                                  "preserved verbatim on the saved page.")}
+
+
+def create_note(text, source_chat_id=None, source_msg_id=None):
+    """A manually-typed note (Telegram `/note ...`) — no URL, no fetch. Gemini only supplies a
+    title/category/tags for organizing it; the summary is always the verbatim text, so nothing
+    the user wrote is paraphrased, summarized away, or dropped for being 'too thin'."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    con = db.connect()
+    item_id = db.new_id()
+    con.execute(
+        "INSERT INTO items (id,user_id,source_chat_id,source_msg_id,raw_text,status,content_type,created_at,updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?)",
+        (item_id, config.USER_ID, source_chat_id, source_msg_id, text, "PROCESSING", "note", db.now(), db.now()))
+    con.commit()
+    try:
+        data = (gemini.extract(NOTE_RULE, "(manual note)", text) if config.USE_GEMINI
+                else gemini.stub(NOTE_RULE, "(manual note)", text))
+        db.log(con, item_id, "extract", "ok", f"model={data.get('_model')}")
+    except Exception as e:
+        data = gemini.stub(NOTE_RULE, "(manual note)", text)   # never lose a note to a Gemini error
+        db.log(con, item_id, "extract", "warn", f"gemini failed, used offline stub: {e}")
+    # Force these regardless of what Gemini returned: a note is prose the user wrote down on
+    # purpose, not a list/recipe/translation to reinterpret, and it should always default to
+    # the Note action.
+    data.update(summary=text, list_items=[], recipe={}, translation="", suggested_action="note")
+    dup_of = _write_result(con, item_id, NOTE_RULE, {"manual": True}, data, "note")
+    row = con.execute("SELECT title, category FROM items WHERE id=?", (item_id,)).fetchone()
+    con.commit()
+    con.close()
+    if dup_of:
+        return {"id": item_id, "status": "DUPLICATE", "duplicate_of": dup_of}
+    return {"id": item_id, "status": "ACTIONABLE",
+            "title": row["title"] if row else None, "category": row["category"] if row else None}
+
+
 def requeue_stuck():
     """Re-run items left in PROCESSING by a previous crash. Called on startup.
     (On a fresh start nothing is genuinely processing, so every PROCESSING row is stale.)"""

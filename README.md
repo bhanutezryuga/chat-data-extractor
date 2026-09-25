@@ -1,12 +1,12 @@
 # Chat Data Extractor
 
-Catch links/files shared into a **Telegram bot**, understand what each is and what it's for, turn it into a **trackable task**, and show status on a **dashboard**. **Google Gemini** is the single LLM provider.
+Catch links/files shared into a **Telegram bot**, understand what each is and what it's for, and write it into your **Logseq knowledge base** — with a weekly review digest so saves don't rot. **Google Gemini** is the single LLM provider. A minimal local dashboard shows capture stats and surfaces anything stuck.
 
 ## Why
-Useful reels, shorts, videos, PDFs, and articles get lost in chat scrollback and never acted on. This turns them into an actionable backlog.
+Useful reels, shorts, videos, PDFs, and articles get lost in chat scrollback and never acted on. This turns them into a linked, backlinked knowledge base you actually revisit.
 
 ## How it works (one breath)
-Telegram bot (or the dashboard's "Add link" box) → classify via rules → fetch description (PDFs go to Gemini natively) → Gemini extracts a summary + an actionable task → SQLite → dashboard. Reels/shorts/videos with **no usable description** are analyzed as **video** by Gemini multimodal (YouTube by URL; Instagram/TikTok via optional yt-dlp).
+Telegram bot → classify via rules → fetch description (PDFs go to Gemini natively) → Gemini extracts a summary/list/recipe + an actionable task → SQLite → a Logseq page. Reels/shorts/videos with **no usable description** are analyzed as **video** by Gemini multimodal (YouTube by URL; Instagram/TikTok via optional yt-dlp).
 
 ## Actions / intent ("what do I want to do with this?")
 Every item gets a **smart-default action** Gemini picks from the content, and you can override it — one action per item:
@@ -16,35 +16,61 @@ Every item gets a **smart-default action** Gemini picks from the content, and yo
 
 Note↔List switching is **instant** (same extraction, different emphasis); Translate runs a translation if one wasn't already made. New actions (Shop/Organize/Share) plug in the same way.
 
-**Two ways to set the action:**
+**Two ways to set the action, both in Telegram:**
 - **Choose first:** send `new <link>` → the bot shows **[📝 Note] [📋 List] [🌐 Translate] [✨ Auto]**; tap one and *then* it processes (Auto = let it decide).
-- **Auto + override:** send a bare link → it auto-processes; switch later via the buttons under the result or the **dashboard popup switcher**.
+- **Auto + override:** send a bare link → it auto-processes; switch later via the buttons under the result message.
 
-**Each item shows only its action's content** — Translate shows just the translation, List just the list, Note the summary/key-points. Translate target defaults to **English** (`TRANSLATE_TO`); any non-English content is rendered to it.
+**Each result shows only its action's content** — Translate shows just the translation, List just the list, Note the summary/key-points.
+
+## Recipe capture
+If Gemini detects the content **is** a recipe, it's documented in full on the Logseq page — every ingredient (with quantity) under `## Ingredients`, every step in order under `## Steps` — instead of a generic summary. No button needed; it's automatic.
 
 ## Knowledge base + revisits (so saves don't rot)
-A read-later pile is a graveyard unless it comes back to you. Every processed item also becomes a **knowledge record**: Gemini gives it a **title** and a **category** (Reading, Watching, Listening, Learning, Shopping, Reference, Cooking, Travel, Other), and any enumerated `list_items` (books, products, tools…) are split into a **collection** you can check off (To-Read, Wishlist, …).
+A read-later pile is a graveyard unless it comes back to you. Every processed item also becomes a **knowledge record**: Gemini gives it a **title** and a **category** (Reading, Watching, Listening, Learning, Shopping, Reference, Cooking, Travel, Other), and any enumerated `list_items` (books, products, tools…) are captured as a checkable collection.
 
-Each item is then queued on a **spaced-repetition schedule** (`REVISIT_SCHEDULE`, default `1,3,7,16,35` days). When one comes due, the bot sends a **🔔 revisit** nudge with three buttons:
-- **✅ Revisited** — advance to the next interval (further out each time).
-- **💤 Snooze** — remind again in `REVISIT_SNOOZE_DAYS`.
-- **🎓 Learned** — stop reminding (archived, 100% progress).
+Each item is then queued on a **spaced-repetition schedule** (`REVISIT_SCHEDULE`, default `1,3,7,16,35` days). How that surfaces depends on `REVISIT_MODE`:
+- **`digest`** (default) — one **weekly Telegram message** listing everything due (`/review` to trigger it on demand).
+- **`peritem`** — a **🔔 revisit** nudge per item as it comes due, with **[✅ Revisited] [💤 Snooze] [🎓 Learned]** buttons.
+- **`off`** — no reminders; review happens in Logseq itself.
 
-The dashboard's **🔔 to revisit** chip opens a panel of what's due plus all your collections; every item's popup also has the revisit controls, a progress bar, and its checkable collection. Turn the whole thing off with `REVISIT_ENABLED=0`. Reminders go to the item's origin chat (or `REMIND_CHAT_ID`).
+The dashboard's **Due to review** tile shows the current count. Turn revisits off entirely with `REVISIT_ENABLED=0`. Reminders go to the item's origin chat (or `REMIND_CHAT_ID`).
 
-## Logseq export (optional)
-Point `LOGSEQ_GRAPH_DIR` at a [Logseq](https://logseq.com) graph folder and every capture is also written there as a Markdown page — `title`/`category`/`url`/`captured` properties, the summary, key points, the collection as checkable `TODO`s, and a `SCHEDULED` revisit that shows in Logseq's agenda — plus a one-line journal breadcrumb. Categories and collections become `[[pages]]`, so your saves turn into a linked, backlinked knowledge base. The page's `## Notes` section is yours and is preserved across re-exports. Off unless `LOGSEQ_GRAPH_DIR` is set.
+## Logseq export
+Point `LOGSEQ_GRAPH_DIR` at a [Logseq](https://logseq.com) graph folder and every capture is written there as a Markdown page — a minimal `title::`/`tags::` properties block, then the summary/key points (or recipe, or list), a translation if made, and the collection as bullets. Categories in `LOGSEQ_TODO_CATEGORIES` (default `Learning,Reading`) get their collection items as checkable `TODO`s and a `SCHEDULED` revisit line that shows in Logseq's agenda; every other category (songs, recipes, videos to watch…) gets plain reference bullets. Tags become `[[pages]]`, so your saves turn into a linked, backlinked knowledge base. The page's `## Notes` section is yours and is preserved across re-exports. A one-line journal breadcrumb is added too (`LOGSEQ_JOURNAL=0` to turn that off). Off unless `LOGSEQ_GRAPH_DIR` is set.
 
-**Two-way:** a watcher reads your Logseq edits back into the app — tick a collection item's checkbox and it's marked done in the app; set a page's `status::` to `learned` and the app stops reminding you about it. The app keeps the page fresh as its own state changes, so the graph and the app stay in sync (poll interval `LOGSEQ_SYNC_SECONDS`).
+**Content dedup:** a capture that matches an earlier item's content (same list, or same title) is marked a duplicate instead of writing a second page — and when a page *is* list-based, the redundant Summary/Key points sections are skipped so the page just shows the list.
 
-**Bulk export:** backfill an existing graph any time via the **⤓ Export to Logseq** button (in the dashboard's Collections panel), the Telegram `/export` command, or `POST /api/export/logseq`. Reprocessing an item preserves your checked-off collection items.
+**Bulk export / backfill:** push everything currently in the database to Logseq via the Telegram `/export` command, or backfill a batch of links from a text file (see **Bulk sideload** below). Reprocessing an item preserves your checked-off collection items.
+
+## Manual notes
+Not everything worth keeping is a link. Send `/note <text>` in Telegram to jot something down directly — Gemini gives it a title and category so it's organized alongside everything else, but **the note text itself is always kept verbatim**: never paraphrased, turned into a list, or dropped for being short. It gets a Logseq page like any other capture.
+
+## Recovering stuck items (retry / archive)
+Items that hit a transient failure (rate-limits, 503s, an expired Instagram session) land in **FAILED** or **NEEDS_REVIEW** instead of silently vanishing. They show up under **⚠ Needs attention** on the dashboard with a **clear reason** — not just the raw status — e.g. "Instagram session expired — re-export ig_cookies.txt" or "Post deleted or removed", alongside the raw technical detail if you want it. From there:
+- **🔁 Retry now** — reprocess every stuck item in the background (gentle: one at a time, bails out on an Instagram logout, repeated rate-limits, or the daily budget).
+- **🗑 Archive gone (N)** — clear out items that are permanently unrecoverable (deleted/removed posts — HTTP 404/410) so they stop cluttering the panel.
+
+Archived items aren't just gone without a trace — a collapsible **🗑 Archived** section on the dashboard (collapsed by default) lists what was archived and why.
+
+Same two actions work from Telegram: `/retry` and `/archivegone`. Or from the command line for finer control (`--limit`, `--delay`, `--all` to include every source, not just sideloaded ones):
+```bash
+python -m app.sideload --retry [--run] [--limit N] [--all]
+python -m app.sideload --archive-gone [--run] [--all]
+```
+
+## Bulk sideload
+Backfill a batch of links from a `<timestamp> <link>` text file — no Telegram round-trip needed:
+```bash
+python -m app.sideload links.txt          # dry run: shows what would be processed
+python -m app.sideload links.txt --run    # actually process (dedup-safe: re-running just resumes)
+```
 
 ## Gemini usage (no "balance" exists)
-The Gemini API has **rate limits, not a token balance**. The app **meters** every call's real token count into the `gemini_usage` table and shows, in the dashboard header: **tokens used today vs your daily budget** (colored bar), **requests today vs requests/day**, and all-time tokens. A budget guard **defers video calls to NEEDS_REVIEW** once you hit the cap. Tune the limits in `.env` (`DAILY_TOKEN_BUDGET`, `GEMINI_RPD_LIMIT`); verify real numbers at <https://ai.google.dev/gemini-api/docs/rate-limits>.
+The Gemini API has **rate limits, not a token balance**. The app **meters** every call's real token count into the `gemini_usage` table and shows, in the dashboard header: **tokens used today vs your daily budget** (colored bar) and **requests today vs requests/day**. A budget guard **defers video calls** once you hit the cap. Tune the limits in `.env` (`DAILY_TOKEN_BUDGET`, `GEMINI_RPD_LIMIT`); verify real numbers at <https://ai.google.dev/gemini-api/docs/rate-limits>.
 
-## Video analysis (v2)
+## Video analysis
 - **YouTube** works out of the box — no install (sent to Gemini by URL).
-- **Instagram / TikTok** need **yt-dlp** (optional). Install it, then hit **Reprocess** on any NEEDS_REVIEW item:
+- **Instagram / TikTok** need **yt-dlp** (optional):
   ```powershell
   python -m pip install yt-dlp     # or: winget install yt-dlp
   ```
@@ -54,7 +80,7 @@ The Gemini API has **rate limits, not a token balance**. The app **meters** ever
 Instagram serves **nothing** to anonymous clients (no caption/og tags — just a JS shell) and requires a **login** even for yt-dlp. Because the app runs locally, you lend it your Instagram session via a **cookies file**:
 
 1. Install **yt-dlp** (once): `python -m pip install yt-dlp`
-2. In Chrome (logged into Instagram), install the extension **“Get cookies.txt LOCALLY”**.
+2. In Chrome (logged into Instagram), install the extension **"Get cookies.txt LOCALLY"**.
 3. Open <https://www.instagram.com>, click the extension → **Export** → save as `ig_cookies.txt` in the project folder.
 4. In `.env` set: `INSTAGRAM_COOKIES=C:\Users\<you>\chat-data-extractor\ig_cookies.txt`
 5. Restart (`python -m app`). Now Instagram works:
@@ -62,7 +88,7 @@ Instagram serves **nothing** to anonymous clients (no caption/og tags — just a
    - **Reels / video** → caption + the video is downloaded and analyzed.
    - **Caption-only** when that's all there is.
 
-Notes: the cookies file *is* your Instagram session — keep it private, never commit it; re-export when it expires. `--cookies-from-browser chrome` is unreliable on Windows (Chrome encrypts cookies / DPAPI), which is why we use the file. Using a personal account for automated fetches is against Instagram’s ToS — keep usage light.
+Notes: the cookies file *is* your Instagram session — keep it private, never commit it. **Instagram periodically force-invalidates it** (observed: after roughly 20–30 links even at a conservative pace) — when that happens, captures start landing in FAILED/NEEDS_REVIEW; re-export a fresh `sessionid` via the extension, restart, and `/retry`. `--cookies-from-browser chrome` is unreliable on Windows (Chrome encrypts cookies / DPAPI), which is why we use the file. Using a personal account for automated fetches is against Instagram's ToS — keep usage light.
 
 ---
 
@@ -82,12 +108,12 @@ python -m app           # or double-click run.bat — leave the window open so i
 #    http://127.0.0.1:8000
 ```
 
-> **Keep it running:** launch it in your *own* terminal (`run.bat` on Windows, `./run.sh` on Linux/macOS/Pi) and leave it open — the app runs until you close it / press Ctrl+C. On startup it **auto-requeues** any item left mid-processing by a previous crash, so nothing gets permanently stuck.
+> **Keep it running:** launch it in your *own* terminal (`run.bat` on Windows, `./run.sh` on Linux/macOS/Pi) and leave it open — the app runs until you close it / press Ctrl+C. On startup it **auto-requeues** any item left mid-processing by a previous crash, so nothing gets permanently stuck. On Windows you can also register it to start automatically at log-on — see **[deploy/WINDOWS_AUTOSTART.html](deploy/WINDOWS_AUTOSTART.html)**.
 
-**Runs anywhere:** pure Python standard library (yt-dlp optional) — Windows, macOS, Linux, **Raspberry Pi**, or an **old Android phone** (via Termux). A home device keeps your residential IP so Instagram/YouTube keep working. 24/7 host guides: **[docs/RASPBERRY_PI.md](docs/RASPBERRY_PI.md)** · **[docs/ANDROID_PHONE.md](docs/ANDROID_PHONE.md)**.
+**Runs anywhere:** pure Python standard library (yt-dlp optional) — Windows, macOS, Linux, **Raspberry Pi**, or an **old Android phone** (via Termux). A home device keeps your residential IP so Instagram/YouTube keep working. 24/7 host guides: **[docs/RASPBERRY_PI.html](docs/RASPBERRY_PI.html)** · **[docs/ANDROID_PHONE.html](docs/ANDROID_PHONE.html)**.
 
 - Without `GEMINI_API_KEY`, an **offline stub** runs so the app still works (just less smart).
-- Without `TELEGRAM_BOT_TOKEN`, the bot is disabled but the dashboard + "Add link" box still work.
+- Without `TELEGRAM_BOT_TOKEN`, the bot is disabled but the dashboard + `/api/ingest` still work.
 - Reset the database: delete `data/app.db`.
 
 ### Get the two credentials
@@ -103,12 +129,14 @@ app/
   rules.py      # classify a URL via the rules table
   fetch.py      # oEmbed / readability / PDF download
   gemini.py     # Gemini over raw HTTPS (+ offline stub)
-  pipeline.py   # ingest -> classify -> fetch -> extract -> task -> knowledge record
-  revisit.py    # spaced-repetition scheduler + due-item scanner
+  pipeline.py   # ingest -> classify -> fetch -> extract -> task -> knowledge record; also manual notes
+  revisit.py    # spaced-repetition scheduler + digest/per-item reminders
   logseq.py     # export captures to a Logseq graph (Markdown pages + journal)
+  sideload.py   # bulk-import from a file; retry/archive stuck items (CLI + used by the dashboard)
+  failures.py   # turns a raw error string into a human category + label (dashboard/API)
   telegram.py   # long-poll getUpdates (no public URL needed)
   web.py        # ThreadingHTTPServer: dashboard + JSON API
-  static/index.html   # the dashboard UI
+  static/minimal.html   # the dashboard UI
 db/  schema.sql · seed_rules.sql      # reused by the app on startup
 spike/  run.py                        # earlier throwaway proof-of-concept
 ```
@@ -116,20 +144,19 @@ spike/  run.py                        # earlier throwaway proof-of-concept
 ---
 
 ## Security & going online
-Locally it runs open on `127.0.0.1` (auth off). **Before exposing it to the internet**, set `APP_PASSWORD` (and `SESSION_SECRET`, `TELEGRAM_ALLOWED_CHAT_IDS`) in `.env` — then it requires login, the bot only obeys your chat, and outbound fetches are SSRF-guarded. Without `APP_PASSWORD` the app refuses to bind to anything but localhost. Full runbook (Cloudflare Tunnel + Access, or Tailscale; PC / Raspberry Pi / Android hosting): **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+Locally it runs open on `127.0.0.1` (auth off). **Before exposing it to the internet**, set `APP_PASSWORD` (and `SESSION_SECRET`, `TELEGRAM_ALLOWED_CHAT_IDS`) in `.env` — then it requires login, the bot only obeys your chat, and outbound fetches are SSRF-guarded. Without `APP_PASSWORD` the app refuses to bind to anything but localhost. Full runbook (Cloudflare Tunnel + Access, or Tailscale; PC / Raspberry Pi / Android hosting): **[DEPLOYMENT.html](DEPLOYMENT.html)**.
 
 ## Design docs
-These were written first (PM / Dev / Architect / DBA hats). They describe a Cloudflare-serverless
-target; the **current build runs the same pipeline + schema locally in Python** instead.
-- [docs/PLAN.md](docs/PLAN.md) — scope, milestones, risks *(PM)*
-- [docs/DESIGN.md](docs/DESIGN.md) — flows, prompts, API, dashboard *(Dev/UX)*
-- [docs/RULES.md](docs/RULES.md) — content-type rules engine *(the "purpose" brain)*
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — topology + DB schema *(Architect/DBA)*
-- [docs/TEST.md](docs/TEST.md) — test strategy *(QA)*
+These were written first (PM / Dev / Architect / DBA hats), describing a Cloudflare-serverless target with a task-tracker dashboard. The project has since pivoted twice: first to running that same pipeline **locally in Python** instead of Cloudflare, then to a **capture → Logseq knowledge base + weekly review** tool — the task-tracker dashboard described here was later replaced by the minimal metrics view above. Kept as historical design intent, not current scope:
+- [docs/PLAN.html](docs/PLAN.html) — scope, milestones, risks *(PM)*
+- [docs/DESIGN.html](docs/DESIGN.html) — flows, prompts, API, dashboard *(Dev/UX)*
+- [docs/RULES.html](docs/RULES.html) — content-type rules engine *(the "purpose" brain)*
+- [docs/ARCHITECTURE.html](docs/ARCHITECTURE.html) — topology + DB schema *(Architect/DBA)*
+- [docs/TEST.html](docs/TEST.html) — test strategy *(QA)*
 
 ## Database
 - [db/schema.sql](db/schema.sql) — schema (SQLite; also valid D1 DDL)
 - [db/seed_rules.sql](db/seed_rules.sql) — 7 default rules + seed user
 
 ## Status
-**v1 + v2 working end-to-end**, validated with live Gemini: classify → extract → task → dashboard, including **multimodal video analysis** (YouTube tested live) and **token-usage metering**. Instagram/TikTok video is enabled by installing yt-dlp. Latest: a **PKM layer** — auto-categorized knowledge records, checkable collections, and **spaced-repetition revisit reminders** over the same bot.
+**Live and in daily use.** Captures flow Telegram → Gemini → Logseq, with recipe capture, content dedup, and lean list pages. A minimal dashboard shows capture/usage stats, an **Archived** view, and a **Needs attention** panel — with clear failure reasons and one-click **retry**/**archive** — for anything stuck. Manual notes (`/note <text>`) capture things with no link involved. Bulk backfill and stuck-item recovery are also available via the `python -m app.sideload` CLI. Video analysis (YouTube out of the box; Instagram/TikTok via optional yt-dlp) and token-usage metering are both validated live. Docs were migrated from Markdown to HTML (this README is the one deliberate exception, so GitHub still renders it as the repo's landing page).

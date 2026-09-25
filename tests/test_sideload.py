@@ -117,5 +117,71 @@ s = sideload.run(f3, execute=True, delay=0, allow_nonpublic=True, out=_silent)
 check("run (real): re-run is idempotent (all duplicates, nothing processed)",
       s["new"] == 0 and s["duplicate"] == 2 and s["processed"] == 0, str(s))
 
+# ---------- --retry mode ----------
+def _seed_stuck(status, src="sideload"):
+    con = db.connect(); iid = db.new_id()
+    con.execute("INSERT INTO items (id,user_id,source_chat_id,raw_url,status,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (iid, config.USER_ID, src, f"https://stuck.test/{iid[:6]}", status, db.now(), db.now()))
+    con.commit(); con.close(); return iid
+
+fA, fB = _seed_stuck("FAILED"), _seed_stuck("FAILED")
+nr = _seed_stuck("NEEDS_REVIEW")
+other = _seed_stuck("FAILED", src="web")   # non-sideload
+
+rcalls = []
+def _fake_rp(iid):
+    rcalls.append(iid); return {"id": iid, "status": "ACTIONABLE"}
+
+s = sideload.retry(execute=False, out=_silent)
+check("retry dry-run: counts the 3 sideload stuck items, reprocesses nothing", s["candidates"] == 3 and rcalls == [])
+
+rcalls = []
+s = sideload.retry(execute=True, delay=0, reprocess_fn=_fake_rp, out=_silent)
+check("retry: reprocesses the 3 sideload items (not the non-sideload one)", len(rcalls) == 3 and other not in rcalls)
+check("retry: recovered count", s["recovered"] == 3)
+
+rcalls = []
+sideload.retry(execute=True, delay=0, sideload_only=False, reprocess_fn=_fake_rp, out=_silent)
+check("retry --all: includes non-sideload stuck items", other in rcalls)
+
+rcalls = []
+sideload.retry(execute=True, delay=0, limit=1, reprocess_fn=_fake_rp, out=_silent)
+check("retry --limit 1: processes only one", len(rcalls) == 1)
+
+rcalls = []
+s = sideload.retry(execute=True, delay=0, sideload_only=False,
+                   reprocess_fn=lambda iid: rcalls.append(iid) or {"status": "FAILED"}, out=_silent)
+check("retry: bails after 4 consecutive non-recoveries", s["stopped"] == "consecutive_failures" and len(rcalls) == 4)
+
+# retry skips permanently-gone (404/410) items so they can't trip the safety or waste a request
+def _seed_gone(reason):
+    con = db.connect(); iid = db.new_id()
+    con.execute("INSERT INTO items (id,user_id,source_chat_id,raw_url,status,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (iid, config.USER_ID, "sideload", f"https://gone.test/{iid[:6]}", "FAILED", db.now(), db.now()))
+    con.execute("INSERT INTO processing_logs (id,item_id,step,status,detail,created_at) VALUES (?,?,?,?,?,?)",
+                (db.new_id(), iid, "extract", "error", reason, db.now()))
+    con.commit(); con.close(); return iid
+
+g1 = _seed_gone("instagram: Instagram API: HTTP Error 404: Not Found")
+g2 = _seed_gone("HTTP Error 410: Gone")
+rcalls = []
+s = sideload.retry(execute=True, delay=0,
+                   reprocess_fn=lambda iid: rcalls.append(iid) or {"status": "ACTIONABLE"}, out=_silent)
+check("retry: skips permanently-gone 404/410 items", s["skipped_gone"] == 2 and g1 not in rcalls and g2 not in rcalls)
+
+# archive-gone: mark the 404/410 items ARCHIVED so they leave the stuck set
+s = sideload.archive_gone(execute=False, out=_silent)
+check("archive-gone dry-run: finds gone items, archives nothing", s["gone"] >= 2 and s["archived"] == 0)
+s = sideload.archive_gone(execute=True, out=_silent)
+check("archive-gone: archives the gone items", s["archived"] >= 2)
+con = db.connect()
+st1 = con.execute("SELECT status FROM items WHERE id=?", (g1,)).fetchone()["status"]
+still_gone = sideload.archive_gone(execute=False, out=_silent)["gone"]
+con.close()
+check("archive-gone: gone item is now ARCHIVED (not FAILED)", st1 == "ARCHIVED")
+check("archive-gone: nothing left to archive on re-run", still_gone == 0)
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)

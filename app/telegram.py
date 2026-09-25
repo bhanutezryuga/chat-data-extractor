@@ -10,7 +10,7 @@ import time
 import urllib.request
 from urllib.parse import urlencode
 
-from . import config, db, logseq, pipeline, revisit
+from . import config, db, logseq, pipeline, revisit, sideload, web
 
 API = "https://api.telegram.org/bot{token}/{method}"
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -252,6 +252,9 @@ def handle_update(u):
                      "Send a link and I'll auto-process it, or use `new <link>` to choose the "
                      "action first (Note / List / Translate / Auto).\n"
                      "`/review` → what's due to revisit this week.\n"
+                     "`/retry` → reprocess stuck/failed items.\n"
+                     "`/archivegone` → clear stuck items that are permanently gone (404/410).\n"
+                     "`/note <text>` → jot a personal note, no link needed.\n"
                      + ("`/export` → write everything to your Logseq graph.\n" if logseq.active() else "")
                      + f"Your chat id: {chat_id}  (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)\n"
                      f"Dashboard: http://{config.HOST}:{config.PORT}")
@@ -268,6 +271,45 @@ def handle_update(u):
 
     if low.startswith("/review"):          # on-demand weekly review digest
         send_review_digest(chat_id=chat_id)
+        return
+
+    if low.startswith("/retry"):           # reprocess stuck FAILED/NEEDS_REVIEW items
+        with web._retry_lock:
+            if web._retry_state["running"]:
+                send_message(chat_id, "🔁 A retry is already running.")
+                return
+            web._retry_state["running"] = True
+        send_message(chat_id, "🔁 Retrying stuck items in the background…")
+
+        def _run():
+            web._run_retry_bg(None, False)   # all sources, matching what the dashboard panel shows
+            s = web._retry_state["last"] or {}
+            send_message(chat_id, f"✅ Retry done — reprocessed {s.get('processed', 0)}, "
+                                  f"recovered {s.get('recovered', 0)}"
+                         + (f" — stopped: {s['stopped']}" if s.get("stopped") else ""))
+        threading.Thread(target=_run, daemon=True).start()
+        return
+
+    if low.startswith("/archivegone"):     # clear permanently-404/410 stuck items
+        res = sideload.archive_gone(execute=True, sideload_only=False, out=lambda *a, **k: None)
+        send_message(chat_id, f"🗑 Archived {res['archived']} permanently-gone item(s).")
+        return
+
+    if low.startswith("/note"):            # jot a manual note — no link needed
+        body = text[len("/note"):].strip()
+        if not body:
+            send_message(chat_id, "Send your note right after the command, e.g.\n"
+                                  "/note Ping the landlord about the leak before Friday.")
+            return
+        r = pipeline.create_note(body, source_chat_id=str(chat_id), source_msg_id=f"note{msg_id}")
+        if not r:
+            send_message(chat_id, "Empty note — nothing saved.")
+        elif r["status"] == "DUPLICATE":
+            send_message(chat_id, "🔁 A very similar note is already saved.")
+        else:
+            tail = f" [{r['category']}]" if r.get("category") else ""
+            send_message(chat_id, f"📝 Note saved — {r.get('title') or 'untitled'}{tail}"
+                         + ("\nWritten to your Logseq graph." if logseq.active() else ""))
         return
 
     # `new <link>` (or `/new`) — choose the action BEFORE processing

@@ -82,6 +82,16 @@ def init():
             "'description_first','gemini_text',"
             "'Summarize the content in one short paragraph, list up to 3 key points, and propose ONE concrete actionable task (title, why it matters, first step). Tag the topic. Return as JSON.',"
             "13,1)")
+        # Not reached via classify() (enabled=0, matcher never matches) — exists only so
+        # items.rule_id's foreign key is satisfied for manually-typed notes (pipeline.create_note).
+        con.execute(
+            "INSERT OR IGNORE INTO rules "
+            "(id,name,matcher,matcher_kind,content_type,purpose,extraction_strategy,analyzer,action_template,priority,enabled) "
+            "VALUES ('rule_note','Manual note','(?!)','url_regex','note',"
+            "'A personal note the user chose to write down directly (not fetched from a link).',"
+            "'text','gemini_text',"
+            "'Give this note a short, specific title (not a full sentence) and classify it into the best-fitting category. Keep the summary and key points brief - they will not be shown; the note text itself is preserved verbatim on the saved page.',"
+            "999,0)")
     con.commit()
     con.close()
 
