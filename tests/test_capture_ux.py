@@ -284,5 +284,37 @@ t = " | ".join(_texts())
 check("with 0 gone items the reply says so", "no" in t.lower() and "gone" in t.lower(), t)
 check("...and offers no button", not _buttons(_sent()), _buttons(_sent()))
 
+# =========================================================================
+# #19 — /start and /help text
+# =========================================================================
+print("\n=== #19: help text ===\n")
+
+_tg_calls.clear()
+telegram.handle_update(_msg("/start", 40))
+start_p = _sent()[0]
+start = start_p["text"]
+check("/start help contains no backticks", "`" not in start, start)
+check("/start help is sent without a parse_mode (plain text)", "parse_mode" not in start_p)
+for cmd in ("new <link>", "/pending", "/review", "/retry", "/archivegone", "/note", "/help"):
+    check(f"/start help lists {cmd}", cmd in start)
+check("/start help doesn't list /export while Logseq is off", "/export" not in start)
+check("loopback dashboard line says it only works on the host computer",
+      "http://127.0.0.1:8000" in start and "this computer" in start.lower(), start)
+
+_tg_calls.clear()
+telegram.handle_update(_msg("/help", 41))
+check("/help returns the same text as /start", _texts() == [start], _texts())
+
+_orig_host = config.HOST
+config.HOST = "notes.example.org"
+try:
+    _tg_calls.clear()
+    telegram.handle_update(_msg("/start", 42))
+    t = _texts()[0]
+    check("non-loopback host: plain dashboard URL without the local-only caveat",
+          "http://notes.example.org:8000" in t and "this computer" not in t.lower(), t)
+finally:
+    config.HOST = _orig_host
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)

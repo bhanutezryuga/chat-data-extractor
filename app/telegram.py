@@ -311,6 +311,39 @@ def _archive_callback(cb_id, chat_id, mid, token, action):
         edit_message_text(chat_id, mid, done)
 
 
+_LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0", ""}
+
+
+def _help_text(chat_id):
+    """/start and /help. Plain text on purpose (no parse_mode), so nothing needs escaping."""
+    url = f"http://{config.HOST}:{config.PORT}"
+    if config.HOST in _LOOPBACK:
+        dash = ("Dashboard: open it on this computer (the one running the bot), not your phone:\n"
+                f"  http://127.0.0.1:{config.PORT}")
+    else:
+        dash = f"Dashboard: {url}"
+    lines = [
+        "Send a link (or a PDF) and I'll process it automatically.",
+        "",
+        "new <link> - choose the action first (Note / List / Translate / Auto)",
+        "/pending - links from 'new' still waiting for you to pick an action",
+        "/note <text> - save a personal note, no link needed",
+        "/review - what's due to revisit this week",
+        "/retry - reprocess stuck or failed items",
+        "/archivegone - preview stuck items that are permanently gone (404/410), then confirm",
+    ]
+    if logseq.active():
+        lines.append("/export - write everything to your Logseq graph")
+    lines += [
+        "/help - show this message",
+        "",
+        "Revisit reminders come with Revisited / Snooze / Learned buttons.",
+        f"Your chat id: {chat_id} (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)",
+        dash,
+    ]
+    return "\n".join(lines)
+
+
 _PENDING_MAX = 10
 
 
@@ -343,18 +376,8 @@ def handle_update(u):
     text = msg.get("text") or msg.get("caption") or ""
 
     low = text.strip().lower()
-    if low.startswith("/start"):
-        send_message(chat_id,
-                     "Send a link and I'll auto-process it, or use `new <link>` to choose the "
-                     "action first (Note / List / Translate / Auto).\n"
-                     "`/pending` → links from `new` still waiting for you to pick an action.\n"
-                     "`/review` → what's due to revisit this week.\n"
-                     "`/retry` → reprocess stuck/failed items.\n"
-                     "`/archivegone` → clear stuck items that are permanently gone (404/410).\n"
-                     "`/note <text>` → jot a personal note, no link needed.\n"
-                     + ("`/export` → write everything to your Logseq graph.\n" if logseq.active() else "")
-                     + f"Your chat id: {chat_id}  (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)\n"
-                     f"Dashboard: http://{config.HOST}:{config.PORT}")
+    if low.startswith("/start") or low.startswith("/help"):
+        send_message(chat_id, _help_text(chat_id))
         return
 
     if low.startswith("/export"):
