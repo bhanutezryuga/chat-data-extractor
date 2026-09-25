@@ -5,8 +5,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _load_dotenv():
-    env = ROOT / ".env"
+def _load_dotenv(path=None):
+    if os.environ.get("CDE_SKIP_DOTENV") == "1":   # tests opt out so they never inherit real settings
+        return
+    env = Path(path) if path else ROOT / ".env"
     if not env.exists():
         return
     for line in env.read_text(encoding="utf-8").splitlines():
