@@ -132,19 +132,25 @@ def _scan_loop(send_reminder):
     print("  [revisit] scheduler started"
           f" (schedule {list(config.REVISIT_SCHEDULE)} days, scan every {config.REVISIT_CHECK_SECONDS}s)")
     while True:
-        try:
-            con = db.connect()
-            rows = due(con)
-            con.close()
-            for it in rows:
-                try:
-                    send_reminder(dict(it))
-                    _mark_reminded(it["id"])
-                except Exception as e:
-                    print(f"  [revisit] reminder error for {it['id']}: {e}")
-        except Exception as e:
-            print(f"  [revisit] scan error: {e}")
+        _scan_once(send_reminder)
         time.sleep(max(60, config.REVISIT_CHECK_SECONDS))
+
+
+def _scan_once(send_reminder):
+    """One scheduler pass. An item is marked reminded only if `send_reminder` reports success
+    (truthy), so a dropped reminder is retried on the next scan instead of being lost."""
+    try:
+        con = db.connect()
+        rows = due(con)
+        con.close()
+        for it in rows:
+            try:
+                if send_reminder(dict(it)):
+                    _mark_reminded(it["id"])
+            except Exception as e:
+                print(f"  [revisit] reminder error for {it['id']}: {e}")
+    except Exception as e:
+        print(f"  [revisit] scan error: {e}")
 
 
 def start_scheduler(send_reminder):
@@ -188,13 +194,21 @@ def _digest_loop(send_digest):
     print(f"  [revisit] weekly digest mode (every {config.DIGEST_INTERVAL_DAYS}d, "
           f"items due within {config.DIGEST_LOOKAHEAD_DAYS}d)")
     while True:
-        try:
-            if _digest_due():
-                send_digest()
-                set_meta("last_digest_sent", db.now())
-        except Exception as e:
-            print(f"  [revisit] digest error: {e}")
+        _digest_tick(send_digest)
         time.sleep(max(300, config.REVISIT_CHECK_SECONDS))
+
+
+def _digest_tick(send_digest):
+    """One digest-loop pass. `last_digest_sent` advances only when `send_digest()` reports
+    success (truthy); a failed send is retried on the next tick instead of a week later."""
+    try:
+        if _digest_due():
+            if send_digest():
+                set_meta("last_digest_sent", db.now())
+            else:
+                print("  [revisit] digest not delivered — will retry")
+    except Exception as e:
+        print(f"  [revisit] digest error: {e}")
 
 
 def start_digest(send_digest):
