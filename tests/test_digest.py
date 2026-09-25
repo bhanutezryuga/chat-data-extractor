@@ -284,5 +284,93 @@ _calls.clear()
 telegram.send_review_digest(chat_id=777)
 check("...but it still comes round in a later digest", _card_for(s)[0] is not None)
 
+# =========================================================================
+print("\n=== #14: dashboard revisit endpoint + consistent due count ===\n")
+
+import http.client                                   # noqa: E402
+import threading                                     # noqa: E402
+from http.server import ThreadingHTTPServer          # noqa: E402
+from app import web                                  # noqa: E402
+
+_srv = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+_port = _srv.server_address[1]
+
+
+def _req(method, path, body=None, raw=None):
+    c = http.client.HTTPConnection("127.0.0.1", _port, timeout=10)
+    data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+    c.request(method, path, body=data, headers={"Content-Type": "application/json"})
+    r = c.getresponse()
+    payload = r.read().decode()
+    c.close()
+    try:
+        return r.status, json.loads(payload)
+    except ValueError:
+        return r.status, payload
+
+
+try:
+    _reset_items()
+    over = _seed("Overdue study", deadline_days=-2)
+    soon = _seed("Due in 3 days", deadline_days=3)            # inside the 7-day look-ahead
+    _seed("Recipe", category="Cooking", deadline_days=-2)    # non-study: never counted
+    _seed("Far future", deadline_days=30)
+
+    st, stats = _req("GET", "/api/stats")
+    _calls.clear()
+    telegram.send_review_digest(chat_id=777)
+    head = _sends()[0]["text"]
+    check("dashboard due count matches what /review includes",
+          st == 200 and stats["revisit_due"] == 2 and "2 due" in head, (stats.get("revisit_due"), head))
+
+    st, due = _req("GET", "/api/due")
+    got = {d["id"] for d in due.get("items", [])} if isinstance(due, dict) else set()
+    check("GET /api/due lists exactly the review set", st == 200 and got == {over, soon}
+          and due.get("count") == 2, due)
+
+    st, res = _req("POST", "/api/revisit", {"id": over, "action": "learned"})
+    check("POST /api/revisit learned -> 200 with the new state",
+          st == 200 and res.get("learn_status") == "learned" and res.get("id") == over, res)
+    st, stats = _req("GET", "/api/stats")
+    check("...and the due count drops", stats["revisit_due"] == 1, stats["revisit_due"])
+    con = db.connect()
+    nrev = con.execute("SELECT count(*) n FROM revisits WHERE item_id=?", (over,)).fetchone()["n"]
+    con.close()
+    check("...via revisit.mark (revisits row written)", nrev == 1, nrev)
+
+    st, res = _req("POST", "/api/revisit", {"id": soon, "action": "snoozed"})
+    check("POST /api/revisit snoozed -> 200", st == 200 and res.get("deadline"), res)
+    st, res = _req("POST", "/api/revisit", {"id": soon, "action": "revisited"})
+    check("POST /api/revisit revisited -> 200 and advances the stage",
+          st == 200 and res.get("revisit_stage") == 1, res)
+
+    st, _ = _req("POST", "/api/revisit", {"id": soon, "action": "delete"})
+    check("unknown action -> 400", st == 400, st)
+    st, _ = _req("POST", "/api/revisit", {"action": "learned"})
+    check("missing id -> 400", st == 400, st)
+    st, _ = _req("POST", "/api/revisit", raw=b"not json")
+    check("malformed body -> 400", st == 400, st)
+    st, _ = _req("POST", "/api/revisit", {"id": "nope", "action": "learned"})
+    check("unknown id -> 404", st == 404, st)
+
+    config.APP_PASSWORD = "secret"                    # auth on: no cookie -> 401
+    try:
+        st, _ = _req("POST", "/api/revisit", {"id": soon, "action": "learned"})
+        st2, _ = _req("GET", "/api/due")
+    finally:
+        config.APP_PASSWORD = ""
+    check("POST /api/revisit and GET /api/due are behind the auth check", st == 401 and st2 == 401, (st, st2))
+    check("...and the unauthenticated call changed nothing", _item(soon)["learn_status"] == "active")
+finally:
+    _srv.shutdown()
+    _srv.server_close()
+
+html = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "static",
+                         "minimal.html"), encoding="utf-8").read()
+check("dashboard fetches the due list and posts to /api/revisit",
+      "/api/due" in html and "/api/revisit" in html, "")
+check("dashboard renders due titles through esc()", "esc(it.title" in html.split("renderDue", 1)[-1], "")
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)

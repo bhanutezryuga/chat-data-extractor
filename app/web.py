@@ -134,7 +134,8 @@ class Handler(BaseHTTPRequestHandler):
             categories = {r["category"]: r["n"] for r in con.execute(
                 "SELECT category, count(*) n FROM items WHERE category IS NOT NULL GROUP BY category ORDER BY n DESC")}
             learned = con.execute("SELECT count(*) n FROM items WHERE learn_status='learned'").fetchone()["n"]
-            revisit_due = revisit.due_count(con)
+            # the same "due for review" set /review and the weekly digest use (revisit._review_where)
+            revisit_due = revisit.review_count(con)
             con.close()
             return self._send(200, {"statuses": statuses, "types": types, "categories": categories,
                                     "learned": learned, "revisit_due": revisit_due,
@@ -171,6 +172,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"count": len(rows), "items": rows,
                                     "retry_running": _retry_state["running"],
                                     "last_retry": _retry_state["last"]})
+
+        if path == "/api/due":          # the review set (same as /review + the "Due to review" tile)
+            con = db.connect()
+            total = revisit.review_count(con)
+            rows = [{k: r[k] for k in ("id", "title", "category", "raw_url", "deadline",
+                                       "revisit_stage", "revisit_count", "content_type")}
+                    for r in revisit.review_queue(con, 50)]
+            con.close()
+            return self._send(200, {"count": total, "items": rows})
 
         if path == "/api/archived":     # items archived via --archive-gone / the dashboard button
             con = db.connect()
@@ -230,6 +240,21 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=_run_retry_bg, args=(limit, bool(body.get("sideload_only"))),
                              daemon=True).start()
             return self._send(202, {"started": True})
+
+        if path == "/api/revisit":     # {id, action: revisited|snoozed|learned} -> revisit.mark
+            if not isinstance(body, dict):
+                return self._send(400, {"error": "JSON object body required"})
+            item_id, action = body.get("id"), body.get("action")
+            if not isinstance(item_id, str) or not item_id.strip():
+                return self._send(400, {"error": "id required"})
+            if action not in ("revisited", "snoozed", "learned"):
+                return self._send(400, {"error": "action must be revisited, snoozed or learned"})
+            res = revisit.mark(item_id.strip(), action)
+            if res.get("error") == "not found":
+                return self._send(404, res)
+            if res.get("error"):
+                return self._send(400, res)
+            return self._send(200, res)
 
         if path == "/api/archive-gone":   # mark permanently-404/410 stuck items ARCHIVED (no network)
             res = sideload.archive_gone(execute=True, sideload_only=bool(body.get("sideload_only")),
