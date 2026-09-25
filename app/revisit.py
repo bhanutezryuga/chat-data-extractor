@@ -29,13 +29,30 @@ def _progress(stage):
     return min(100, int(round(100 * stage / max(1, len(config.REVISIT_SCHEDULE)))))
 
 
+def is_study(category):
+    """Only *study* items are reviewed. The study set is the single config value
+    LOGSEQ_TODO_CATEGORIES — the same one that decides which items get a `TODO Revisit` in
+    Logseq — so the schedule, the digest and Logseq all agree on what is reviewable."""
+    return (category or "") in config.LOGSEQ_TODO_CATEGORIES
+
+
+def _study_sql():
+    """(sql, args) restricting a query on `items` to study categories. Applied at query time,
+    so rows scheduled before this rule existed simply drop out — no destructive migration."""
+    cats = sorted(config.LOGSEQ_TODO_CATEGORIES)
+    if not cats:
+        return "0", []
+    return f"category IN ({','.join('?' * len(cats))})", cats
+
+
 def schedule_new(con, item_id):
-    """Queue an item for its first revisit — but only if revisit is on, the item is still
-    active, and it isn't already scheduled (so reprocessing never resets a user's progress)."""
+    """Queue an item for its first revisit — but only if revisit is on, the item is a study item
+    (see is_study), still active, and not already scheduled (so reprocessing never resets progress)."""
     if not config.REVISIT_ENABLED:
         return
-    row = con.execute("SELECT deadline, learn_status FROM items WHERE id=?", (item_id,)).fetchone()
-    if not row or row["learn_status"] != "active" or row["deadline"]:
+    row = con.execute("SELECT deadline, learn_status, category FROM items WHERE id=?",
+                      (item_id,)).fetchone()
+    if not row or row["learn_status"] != "active" or row["deadline"] or not is_study(row["category"]):
         return
     con.execute("UPDATE items SET revisit_stage=0, deadline=?, updated_at=? WHERE id=?",
                 (_future(_interval_days(0)), db.now(), item_id))
@@ -79,26 +96,29 @@ def mark(item_id, action):
 
 
 def due(con, limit=50):
-    """Active items whose revisit deadline has passed and that we haven't already reminded
-    for this cycle. (deadline is fixed-width UTC text, so string comparison sorts correctly.)"""
+    """Active study items whose revisit deadline has passed and that we haven't already reminded
+    for this cycle — the peritem scheduler's queue. (deadline is fixed-width UTC text, so string
+    comparison sorts correctly.)"""
+    study, args = _study_sql()
     return con.execute(
-        "SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
+        f"SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL AND {study} "
         "AND deadline <= ? AND (reminded_at IS NULL OR reminded_at < deadline) "
-        "ORDER BY deadline LIMIT ?", (db.now(), limit)).fetchall()
+        "ORDER BY deadline LIMIT ?", (*args, db.now(), limit)).fetchall()
 
 
 def due_count(con):
+    study, args = _study_sql()
     return con.execute(
-        "SELECT count(*) n FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
-        "AND deadline <= ?", (db.now(),)).fetchone()["n"]
+        f"SELECT count(*) n FROM items WHERE learn_status='active' AND deadline IS NOT NULL AND {study} "
+        "AND deadline <= ?", (*args, db.now())).fetchone()["n"]
 
 
 def due_within(con, days, limit=200):
-    """Active items due to revisit within the next `days` (including overdue) — the weekly-review set."""
-    horizon = _future(days)
+    """Active study items due to revisit within the next `days` (including overdue) — the weekly-review set."""
+    study, args = _study_sql()
     return con.execute(
-        "SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL "
-        "AND deadline <= ? ORDER BY deadline LIMIT ?", (horizon, limit)).fetchall()
+        f"SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL AND {study} "
+        "AND deadline <= ? ORDER BY deadline LIMIT ?", (*args, _future(days), limit)).fetchall()
 
 
 def _mark_reminded(item_id):
