@@ -5,6 +5,7 @@ Runs in a daemon thread started from __main__. Handles:
   - PDF document attachments sent straight to the bot
 """
 import json
+import secrets
 import threading
 import time
 import urllib.request
@@ -204,6 +205,10 @@ def _handle_callback(cb):
                 edit_message_text(chat_id, mid, text or "done", kbd)
         return
 
+    if kind == "ag":                                    # /archivegone confirm / cancel (item_id = preview token)
+        _archive_callback(cb_id, chat_id, mid, item_id, action)
+        return
+
     res = pipeline.set_action(item_id, action)          # post-process override
     _call("answerCallbackQuery", callback_query_id=cb_id,
           text=(res.get("error") or f"Switched to {action}")[:180])
@@ -263,6 +268,47 @@ def _dup_reply(chat_id, item_id):
         _reoffer(chat_id, item_id, url)
     else:
         send_message(chat_id, "🔁 Already saved this — skipping.")
+
+
+_archive_previews = {}    # token -> item ids shown in an /archivegone preview (in-memory; lost on restart)
+_ARCHIVE_SAMPLE = 5
+
+
+def _archive_preview(chat_id):
+    """/archivegone step 1: dry-run, show the count + a few URLs, and offer Archive / Cancel."""
+    res = sideload.archive_gone(execute=False, sideload_only=False, out=lambda *a, **k: None)
+    items = res.get("items") or []
+    if not items:
+        send_message(chat_id, "✅ No stuck items look permanently gone (404/410) — nothing to archive.")
+        return
+    token = secrets.token_hex(4)
+    _archive_previews[token] = [it["id"] for it in items]
+    lines = [f"🗑 {len(items)} stuck item(s) look permanently gone (404/410):"]
+    lines += [f"• {it['raw_url'] or it['id']}" for it in items[:_ARCHIVE_SAMPLE]]
+    if len(items) > _ARCHIVE_SAMPLE:
+        lines.append(f"+{len(items) - _ARCHIVE_SAMPLE} more")
+    lines.append("Archive them? They'll leave the failures list and won't be retried.")
+    kbd = {"inline_keyboard": [[{"text": "🗑 Archive", "callback_data": f"ag|{token}|confirm"},
+                                {"text": "✖ Cancel", "callback_data": f"ag|{token}|cancel"}]]}
+    send_message(chat_id, "\n".join(lines), kbd)
+
+
+def _archive_callback(cb_id, chat_id, mid, token, action):
+    """/archivegone step 2: archive exactly the previewed items, or cancel. One use per preview."""
+    ids = _archive_previews.pop(token, None)
+    if ids is None:
+        _call("answerCallbackQuery", callback_query_id=cb_id, text="This preview expired — send /archivegone again.")
+        return
+    if action != "confirm":
+        _call("answerCallbackQuery", callback_query_id=cb_id, text="Cancelled")
+        if chat_id and mid:
+            edit_message_text(chat_id, mid, "✖ Cancelled — nothing was archived.")
+        return
+    res = sideload.archive_gone(execute=True, sideload_only=False, ids=ids, out=lambda *a, **k: None)
+    done = f"🗑 Archived {res['archived']} permanently-gone item(s)."
+    _call("answerCallbackQuery", callback_query_id=cb_id, text=done[:180])
+    if chat_id and mid:
+        edit_message_text(chat_id, mid, done)
 
 
 _PENDING_MAX = 10
@@ -345,9 +391,8 @@ def handle_update(u):
         threading.Thread(target=_run, daemon=True).start()
         return
 
-    if low.startswith("/archivegone"):     # clear permanently-404/410 stuck items
-        res = sideload.archive_gone(execute=True, sideload_only=False, out=lambda *a, **k: None)
-        send_message(chat_id, f"🗑 Archived {res['archived']} permanently-gone item(s).")
+    if low.startswith("/archivegone"):     # preview permanently-404/410 stuck items; archive on confirm
+        _archive_preview(chat_id)
         return
 
     if low.startswith("/note"):            # jot a manual note — no link needed

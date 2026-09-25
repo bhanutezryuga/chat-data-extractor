@@ -213,5 +213,76 @@ _tg_calls.clear()
 telegram.handle_update(_msg("/start", 18))
 check("/start help mentions /pending", any("/pending" in x for x in _texts()), _texts())
 
+# =========================================================================
+# #18 — /archivegone previews first; only the confirm button archives
+# =========================================================================
+print("\n=== #18: /archivegone confirm ===\n")
+
+
+def _buttons(params_list):
+    import json
+    out = []
+    for p in params_list:
+        kbd = json.loads(p.get("reply_markup") or "{}")
+        for row in kbd.get("inline_keyboard", []):
+            out.extend(b.get("callback_data", "") for b in row)
+    return out
+
+
+g1 = _seed("FAILED", "https://www.instagram.com/p/gone-one/", "instagram: HTTP Error 410: Gone")
+keep = _seed("FAILED", "https://example.com/transient", "HTTP Error 503: Service Unavailable")
+gone_now = {iid_gone, g1}                             # iid_gone was seeded in the #15 section
+
+_tg_calls.clear()
+telegram.handle_update(_msg("/archivegone", 30))
+t = " | ".join(_texts())
+check("/archivegone does not change any status", all(_status(i) != "ARCHIVED" for i in gone_now | {keep}))
+check("/archivegone preview states the count", "2" in t, t)
+check("/archivegone preview shows a sample URL", "instagram.com/p/gone-one" in t, t)
+btns = _buttons(_sent())
+confirm = [b for b in btns if b.startswith("ag|") and b.endswith("|confirm")]
+cancel = [b for b in btns if b.startswith("ag|") and b.endswith("|cancel")]
+check("/archivegone preview has ag|…|confirm and ag|…|cancel buttons", confirm and cancel, btns)
+check("ag| callback data fits Telegram's 64-byte limit", all(len(b.encode()) <= 64 for b in btns), btns)
+
+g2 = _seed("NEEDS_REVIEW", "https://www.instagram.com/p/gone-later/", "HTTP Error 404: Not Found")
+_tg_calls.clear()
+telegram.handle_update(_cb(confirm[0]))
+check("confirm archives exactly the previewed items",
+      all(_status(i) == "ARCHIVED" for i in gone_now), [_status(i) for i in gone_now])
+check("...not an item that became gone after the preview", _status(g2) == "NEEDS_REVIEW", _status(g2))
+check("...and never a non-gone item", _status(keep) == "FAILED", _status(keep))
+t = " | ".join(_texts("editMessageText") + _texts())
+check("confirm replies with the archived count", "Archived 2" in t, t)
+
+_tg_calls.clear()                                     # same button tapped twice: no-op
+telegram.handle_update(_cb(confirm[0]))
+check("re-tapping a used confirm doesn't archive anything new", _status(g2) == "NEEDS_REVIEW")
+
+_tg_calls.clear()
+telegram.handle_update(_msg("/archivegone", 31))
+cancel2 = [b for b in _buttons(_sent()) if b.endswith("|cancel")]
+confirm2 = [b for b in _buttons(_sent()) if b.endswith("|confirm")]
+_tg_calls.clear()
+telegram.handle_update(_cb(cancel2[0]))
+check("cancel changes nothing", _status(g2) == "NEEDS_REVIEW")
+check("cancel edits the preview to say so",
+      any("cancel" in x.lower() for x in _texts("editMessageText")), _texts("editMessageText"))
+telegram.handle_update(_cb(confirm2[0]))
+check("confirm after cancel is a no-op", _status(g2) == "NEEDS_REVIEW")
+
+telegram.handle_update(_cb("ag|nosuchtoken|confirm"))
+check("unknown/expired token archives nothing", _status(g2) == "NEEDS_REVIEW")
+
+con = db.connect()
+con.execute("UPDATE items SET status='ARCHIVED' WHERE id=?", (g2,))
+con.commit()
+con.close()
+_tg_calls.clear()
+telegram.handle_update(_msg("/archivegone", 32))
+t = " | ".join(_texts())
+check("with 0 gone items the reply says so", "no" in t.lower() and "gone" in t.lower(), t)
+check("...and offers no button", not _buttons(_sent()), _buttons(_sent()))
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)
