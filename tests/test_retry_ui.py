@@ -235,9 +235,10 @@ finally:
 _ag_calls = []
 
 
-def _fake_archive_gone(*, execute, sideload_only, out=None):
-    _ag_calls.append({"execute": execute, "sideload_only": sideload_only})
-    return {"gone": 1, "archived": 1}
+def _fake_archive_gone(*, execute, sideload_only, out=None, ids=None):
+    _ag_calls.append({"execute": execute, "sideload_only": sideload_only, "ids": ids})
+    return {"gone": 1, "archived": 1 if execute else 0,
+            "items": [{"id": "fake-gone-1", "raw_url": "https://x.test/gone"}]}
 
 
 _orig_archive_gone = sideload.archive_gone
@@ -245,10 +246,21 @@ sideload.archive_gone = _fake_archive_gone
 try:
     _tg_calls.clear()
     telegram.handle_update(_msg(555, "/archivegone"))
-    check("/archivegone: replies with the archived count",
-          any("archived 1" in t.lower() for t in _sent_texts(555)), str(_sent_texts(555)))
-    check("/archivegone calls through with sideload_only=False",
+    check("/archivegone: first sends a dry-run preview (execute=False), not an archive",
+          _ag_calls and _ag_calls[0]["execute"] is False, str(_ag_calls))
+    check("/archivegone preview calls through with sideload_only=False",
           _ag_calls and _ag_calls[0]["sideload_only"] is False, str(_ag_calls))
+    _kbd = json.loads(next((p.get("reply_markup") for m, p in _tg_calls
+                            if m == "sendMessage" and p.get("reply_markup")), "{}"))
+    _confirm = [b["callback_data"] for row in _kbd.get("inline_keyboard", []) for b in row
+                if b["callback_data"].endswith("|confirm")]
+    _tg_calls.clear()
+    telegram.handle_update({"callback_query": {"id": "c", "data": _confirm[0] if _confirm else "",
+                                               "message": {"chat": {"id": 555}, "message_id": 9}}})
+    _edits = [p.get("text", "") for m, p in _tg_calls if m == "editMessageText"]
+    check("/archivegone confirm: archives the previewed ids and replies with the count",
+          len(_ag_calls) == 2 and _ag_calls[1]["execute"] is True and _ag_calls[1]["ids"] == ["fake-gone-1"]
+          and any("archived 1" in t.lower() for t in _edits), f"{_ag_calls} {_edits}")
 finally:
     sideload.archive_gone = _orig_archive_gone
 
