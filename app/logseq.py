@@ -233,6 +233,109 @@ def _merge_notes(new_md, old_text):
     return new_md[:ni] + old_notes
 
 
+# ---- read-back: DONE markers the user set in Logseq (issue #11) -------------
+
+_DONE_RE = re.compile(r"^[ \t]*-[ \t]+DONE[ \t]+(.*?)[ \t]*$")
+_SCHED_RE = re.compile(r"^[ \t]*SCHEDULED:[ \t]*<(\d{4}-\d{2}-\d{2})")
+_BLOCK_RE = re.compile(r"^[ \t]*-([ \t]|$)")
+
+
+def _norm(s):
+    return _oneline(s).casefold()
+
+
+def _existing_page_text(item_id):
+    """Text of the page already on disk for this item (under any title), or '' if none/unreadable."""
+    pages = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
+    suffix = f"-{item_id[:8]}.md"
+    try:
+        names = sorted(n for n in os.listdir(pages) if n.endswith(suffix))
+    except OSError:
+        return ""
+    for name in names:
+        try:
+            with open(os.path.join(pages, name), encoding="utf-8", errors="replace") as f:
+                return f.read()
+        except OSError:
+            continue
+    return ""
+
+
+def parse_done(text):
+    """Pure: find the DONE markers on the app-owned part of a page (above `## Notes`).
+    Returns {"done": [bullet text, ...], "revisit": None | {"scheduled": "YYYY-MM-DD" | None}}.
+    Tolerates tabs/spaces and the property/drawer lines Logseq adds under a block
+    (`collapsed:: true`, `:LOGBOOK:` ... `:END:`)."""
+    out = {"done": [], "revisit": None}
+    ni = text.find(NOTES_MARKER)
+    lines = (text if ni == -1 else text[:ni]).splitlines()
+    for i, ln in enumerate(lines):
+        m = _DONE_RE.match(ln)
+        if not m:
+            continue
+        body = m.group(1)
+        if body.startswith("Revisit"):
+            sched = None
+            for nxt in lines[i + 1:]:                 # scan this block's continuation lines
+                if _BLOCK_RE.match(nxt):
+                    break                             # the next block starts
+                sm = _SCHED_RE.match(nxt)
+                if sm:
+                    sched = sm.group(1)
+                    break
+            out["revisit"] = {"scheduled": sched}
+        else:
+            out["done"].append(body)
+    return out
+
+
+def _bullet_matches(done_text, name):
+    """A DONE bullet matches a collection row when its text is the row name, optionally followed by
+    the ` — note` suffix the renderer adds (the user may have edited the note)."""
+    d, n = _norm(done_text), _norm(name)
+    return bool(n) and (d == n or d.startswith(n + " — ") or d.startswith(n + " - "))
+
+
+_syncing = set()   # item ids whose Revisit DONE is being applied (revisit.mark re-enters export_item)
+
+
+def _sync_done(item, coll, task, text):
+    """Apply the user's Logseq DONE marks to the DB before the page is rewritten. Sets done=1 on
+    matching `coll` rows (DB + in place) and returns (task_done, revisited); `revisited` means
+    revisit.mark was called, so the caller must re-read the item."""
+    found = parse_done(text)
+    task_done = False
+    if found["done"]:
+        hits = [c for c in coll if not c.get("done")
+                and any(_bullet_matches(d, c.get("name") or "") for d in found["done"])]
+        if hits:
+            con = db.connect()
+            try:
+                for c in hits:
+                    con.execute("UPDATE collection_items SET done=1 WHERE id=?", (c["id"],))
+                    c["done"] = 1
+                con.commit()
+            finally:
+                con.close()
+        tt = (task or {}).get("title")
+        task_done = bool(tt) and any(_norm(d) == _norm(tt) for d in found["done"])
+    rv = found["revisit"]
+    revisited = False
+    if (rv and item["id"] not in _syncing and _is_study(item.get("category"))
+            and (item.get("learn_status") or "active") == "active" and item.get("deadline")
+            and (rv["scheduled"] is None or rv["scheduled"] == item["deadline"][:10])):
+        # Only the CURRENT cycle's DONE counts: once the schedule advances, the page's SCHEDULED
+        # date no longer matches, so a stale DONE (or one already applied via Telegram) is ignored.
+        from . import revisit                          # lazy: revisit imports this module
+        _syncing.add(item["id"])
+        try:
+            revisit.mark(item["id"], "revisited")      # re-enters export_item; guarded by _syncing
+            revisited = True
+        finally:
+            _syncing.discard(item["id"])
+    return task_done, revisited
+
+
 def _write_page(item, md):
     """Write the item's page. Returns True if this created a NEW page, False if it overwrote an
     existing one (a page already on disk for this item, under its current or a previous title)."""
@@ -331,11 +434,28 @@ def export_item(item_id):
         con.close()
         if not _has_content(dict(ex) if ex else {}):
             return False                            # nothing was extracted -> don't make a page
+        task = dict(task) if task else {}
+        task_done = False
+        old_text = _existing_page_text(item_id)
+        if old_text:
+            # read-back BEFORE rewriting, so a DONE ticked in Logseq is never reverted (issue #11)
+            try:
+                task_done, revisited = _sync_done(item, coll, task, old_text)
+            except Exception as e:
+                print(f"  [logseq] DONE sync failed for {item_id}: {e}")
+                revisited = False
+            if revisited:                           # the schedule advanced: re-read the item
+                con = db.connect()
+                item = dict(con.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone())
+                con.close()
         # keep the filename keyed to the item (stable), but make title:: unique so Logseq
         # never merges two captures that Gemini happened to give the same title.
         pages_dir = os.path.join(config.LOGSEQ_GRAPH_DIR, "pages")
         render_item = {**item, "title": _unique_title(item.get("title"), _page_filename(item), pages_dir)}
-        md = render_page(render_item, dict(ex) if ex else {}, coll, dict(task) if task else {})
+        md = render_page(render_item, dict(ex) if ex else {}, coll, task)
+        if task_done:                               # keep the user's ticked Task (page-only state)
+            t = _oneline(task["title"])
+            md = md.replace(f"\t- TODO {t}\n", f"\t- DONE {t}\n", 1)
         created = _write_page(item, md)             # ORIGINAL item -> stable filename
         if config.LOGSEQ_JOURNAL:
             _write_journal(item)
