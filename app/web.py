@@ -182,6 +182,13 @@ class Handler(BaseHTTPRequestHandler):
             con.close()
             return self._send(200, {"count": total, "items": rows})
 
+        if path == "/api/pending":      # links saved with `new <link>` still waiting for an action (#17)
+            con = db.connect()
+            rows = _rows(con, "SELECT id, raw_url, created_at FROM items "
+                              "WHERE status='AWAITING_ACTION' ORDER BY created_at LIMIT 100")
+            con.close()
+            return self._send(200, {"count": len(rows), "items": rows})
+
         if path == "/api/archived":     # items archived via --archive-gone / the dashboard button
             con = db.connect()
             rows = _rows(con,
@@ -255,6 +262,27 @@ class Handler(BaseHTTPRequestHandler):
             if res.get("error"):
                 return self._send(400, res)
             return self._send(200, res)
+
+        if path == "/api/pending":     # {id, action: note|list|translate|auto|drop} for an AWAITING_ACTION link
+            item_id, action = body.get("id"), body.get("action")
+            if action not in ("note", "list", "translate", "auto", "drop"):
+                return self._send(400, {"error": "action must be note, list, translate, auto or drop"})
+            con = db.connect()
+            row = con.execute("SELECT id FROM items WHERE id=? AND status='AWAITING_ACTION'",
+                              (item_id,)).fetchone()
+            if not row:
+                con.close()
+                return self._send(404, {"error": "no pending link with that id"})
+            if action == "drop":           # archive, don't delete — it stays visible in the archived view
+                con.execute("UPDATE items SET status='ARCHIVED', updated_at=? WHERE id=?", (db.now(), item_id))
+                db.log(con, item_id, "pending", "ok", "dropped by user from the dashboard")
+                con.commit()
+                con.close()
+                return self._send(200, {"id": item_id, "status": "ARCHIVED"})
+            con.close()
+            # processing fetches the link, so run it in the background like /api/retry
+            threading.Thread(target=pipeline.process_pending, args=(item_id, action), daemon=True).start()
+            return self._send(202, {"id": item_id, "started": True})
 
         if path == "/api/archive-gone":   # mark permanently-404/410 stuck items ARCHIVED (no network)
             res = sideload.archive_gone(execute=True, sideload_only=bool(body.get("sideload_only")),

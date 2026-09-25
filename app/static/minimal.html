@@ -82,6 +82,10 @@
     <h2>📚 Due to review (<span id="due-count">0</span>)</h2>
     <div class="rec" id="due-list"></div>
   </section>
+  <section class="sec" id="pending-sec" hidden>
+    <h2>🆕 Waiting for an action (<span id="pending-count">0</span>)</h2>
+    <div class="rec" id="pending-list"></div>
+  </section>
   <div class="sec"><h2>By category</h2><div class="cats" id="cats"></div></div>
   <div class="sec"><h2>Recent captures</h2><div class="rec" id="recent"></div></div>
   <section class="sec" id="archived-sec" hidden>
@@ -152,10 +156,38 @@ function renderDue(due){
 }
 
 document.addEventListener('click', async e => {
-  const b = e.target.closest('.due-actions button');
+  const b = e.target.closest('.due-actions:not([data-kind="pending"]) button');
   if (!b) return;
   b.parentElement.querySelectorAll('button').forEach(x => x.disabled = true);
   const { ok, data } = await apiPost('/api/revisit', { id: b.dataset.id, action: b.dataset.act });
+  if (!ok) { alert(data.error || 'failed'); }
+  refresh();
+});
+
+// Links saved with `new <link>` that never got an action chosen (#17): process or drop them here.
+function renderPending(p){
+  const sec = document.getElementById('pending-sec');
+  if (!p || !p.count) { sec.hidden = true; return; }
+  sec.hidden = false;
+  document.getElementById('pending-count').textContent = p.count;
+  document.getElementById('pending-list').innerHTML = (p.items||[]).map(it => `
+    <div class="item">
+      ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
+      <div class="due-actions" data-kind="pending">
+        <button data-id="${esc(it.id)}" data-act="note">📝 Note</button>
+        <button data-id="${esc(it.id)}" data-act="list">📋 List</button>
+        <button data-id="${esc(it.id)}" data-act="translate">🌐 Translate</button>
+        <button data-id="${esc(it.id)}" data-act="auto">✨ Auto</button>
+        <button data-id="${esc(it.id)}" data-act="drop">🗑 Drop</button>
+      </div>
+    </div>`).join('');
+}
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-kind="pending"] button');
+  if (!b) return;
+  b.parentElement.querySelectorAll('button').forEach(x => x.disabled = true);
+  const { ok, data } = await apiPost('/api/pending', { id: b.dataset.id, action: b.dataset.act });
   if (!ok) { alert(data.error || 'failed'); }
   refresh();
 });
@@ -190,11 +222,12 @@ function renderUsage(u){
 }
 
 async function refresh(){
-  const [stats, use, items, fails, arch, due] = await Promise.all(
+  const [stats, use, items, fails, arch, due, pending] = await Promise.all(
     [api('/api/stats'), api('/api/usage'), api('/api/items'), api('/api/failures'), api('/api/archived'),
-     api('/api/due')]);
+     api('/api/due'), api('/api/pending')]);
   renderUsage(use);
   renderDue(due);
+  renderPending(pending);
   renderArchived(arch);
 
   // "Needs attention" — shown ONLY when there are FAILED / NEEDS_REVIEW items
