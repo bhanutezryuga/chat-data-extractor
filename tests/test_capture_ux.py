@@ -145,5 +145,73 @@ t = " | ".join(_texts("editMessageText"))
 check("new-chooser ending FAILED: edited message explains it (label + /retry)",
       "Rate limited" in t and "/retry" in t, t)
 
+# =========================================================================
+# #17 — pending `new <link>` items are re-offered and listable
+# =========================================================================
+print("\n=== #17: pending items ===\n")
+
+
+def _chooser_items(params_list):
+    """Item ids referenced by new|<id>|… buttons in the given sendMessage params."""
+    import json
+    ids = set()
+    for p in params_list:
+        kbd = json.loads(p.get("reply_markup") or "{}")
+        for row in kbd.get("inline_keyboard", []):
+            for b in row:
+                if b.get("callback_data", "").startswith("new|"):
+                    ids.add(b["callback_data"].split("|")[1])
+    return ids
+
+
+_tg_calls.clear()
+telegram.handle_update(_msg("new https://example.com/pending-one", 10))
+con = db.connect()
+pend1 = con.execute("SELECT id FROM items WHERE raw_url='https://example.com/pending-one'").fetchone()["id"]
+con.close()
+_tg_calls.clear()                                    # user never taps a button, re-sends the link
+telegram.handle_update(_msg("https://example.com/pending-one", 11))
+t = " | ".join(_texts())
+check("re-sending a pending link does not say 'Already saved'", "already saved" not in t.lower(), t)
+check("...it re-offers the chooser for the same item", _chooser_items(_sent()) == {pend1}, t)
+check("...and the item is still AWAITING_ACTION (not auto-processed)", _status(pend1) == "AWAITING_ACTION")
+
+_tg_calls.clear()                                    # same via `new <link>` again
+telegram.handle_update(_msg("new https://example.com/pending-one", 12))
+t = " | ".join(_texts())
+check("`new <link>` on a pending link re-offers the chooser too",
+      "already saved" not in t.lower() and _chooser_items(_sent()) == {pend1}, t)
+
+# a genuinely processed link still says Already saved
+_tg_calls.clear()
+telegram.handle_update(_msg("https://example.com/processed-one", 13))
+_tg_calls.clear()
+telegram.handle_update(_msg("https://example.com/processed-one", 14))
+check("a processed duplicate still replies 'Already saved'",
+      any("already saved" in x.lower() for x in _texts()), _texts())
+
+_tg_calls.clear()
+telegram.handle_update(_msg("new https://example.com/pending-two", 15))
+con = db.connect()
+pend2 = con.execute("SELECT id FROM items WHERE raw_url='https://example.com/pending-two'").fetchone()["id"]
+con.close()
+_tg_calls.clear()
+telegram.handle_update(_msg("/pending", 16))
+check("/pending re-sends a chooser for every AWAITING_ACTION item",
+      {pend1, pend2} <= _chooser_items(_sent()), _texts())
+check("/pending never says 'I didn't find a link'",
+      not any("didn't find a link" in x for x in _texts()), _texts())
+
+telegram.handle_update(_cb(f"new|{pend1}|auto"))
+telegram.handle_update(_cb(f"new|{pend2}|note"))
+_tg_calls.clear()
+telegram.handle_update(_msg("/pending", 17))
+check("/pending with nothing pending says so, with no buttons",
+      any("nothing" in x.lower() for x in _texts()) and not _chooser_items(_sent()), _texts())
+
+_tg_calls.clear()
+telegram.handle_update(_msg("/start", 18))
+check("/start help mentions /pending", any("/pending" in x for x in _texts()), _texts())
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)

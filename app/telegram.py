@@ -242,6 +242,47 @@ def _ack(item_id):
             + (f"\n{it['raw_url']}" if it["raw_url"] else ""))
 
 
+def _pending_url(item_id):
+    """The raw_url of an item still waiting for a `new <link>` choice, else None."""
+    con = db.connect()
+    r = con.execute("SELECT raw_url FROM items WHERE id=? AND status='AWAITING_ACTION'",
+                    (item_id,)).fetchone()
+    con.close()
+    return (r["raw_url"] or "(no link)") if r else None
+
+
+def _reoffer(chat_id, item_id, url):
+    """Re-show the `new <link>` chooser for an item nobody picked an action for yet."""
+    send_message(chat_id, f"⏳ You haven't picked an action for this yet:\n{url}", _new_kbd(item_id))
+
+
+def _dup_reply(chat_id, item_id):
+    """A link that's already saved: re-offer the chooser if it's still pending, else skip."""
+    url = _pending_url(item_id)
+    if url:
+        _reoffer(chat_id, item_id, url)
+    else:
+        send_message(chat_id, "🔁 Already saved this — skipping.")
+
+
+_PENDING_MAX = 10
+
+
+def _send_pending(chat_id):
+    """/pending — re-send the chooser for every `new <link>` item still awaiting a choice."""
+    con = db.connect()
+    rows = con.execute("SELECT id, raw_url FROM items WHERE user_id=? AND status='AWAITING_ACTION' "
+                       "ORDER BY created_at", (config.USER_ID,)).fetchall()
+    con.close()
+    if not rows:
+        send_message(chat_id, "✅ Nothing pending — every saved link has an action.")
+        return
+    send_message(chat_id, f"⏳ {len(rows)} link(s) waiting for you to pick an action"
+                 + (f" — showing the oldest {_PENDING_MAX}" if len(rows) > _PENDING_MAX else "") + ":")
+    for r in rows[:_PENDING_MAX]:
+        _reoffer(chat_id, r["id"], r["raw_url"] or "(no link)")
+
+
 def handle_update(u):
     if u.get("callback_query"):
         return _handle_callback(u["callback_query"])
@@ -260,6 +301,7 @@ def handle_update(u):
         send_message(chat_id,
                      "Send a link and I'll auto-process it, or use `new <link>` to choose the "
                      "action first (Note / List / Translate / Auto).\n"
+                     "`/pending` → links from `new` still waiting for you to pick an action.\n"
                      "`/review` → what's due to revisit this week.\n"
                      "`/retry` → reprocess stuck/failed items.\n"
                      "`/archivegone` → clear stuck items that are permanently gone (404/410).\n"
@@ -276,6 +318,10 @@ def handle_update(u):
             n = logseq.export_all()
             send_message(chat_id, f"⤓ Exported {n} new item(s) to your Logseq graph." if n
                          else "✅ Logseq graph already up to date — no new items to export.")
+        return
+
+    if low.startswith("/pending"):         # re-offer the chooser for `new <link>` items left undecided
+        _send_pending(chat_id)
         return
 
     if low.startswith("/review"):          # on-demand weekly review digest
@@ -332,6 +378,8 @@ def handle_update(u):
                                         source_chat_id=str(chat_id), source_msg_id=f"new{msg_id}:{i}")
             if r and r.get("status") == "AWAITING_ACTION":
                 send_message(chat_id, f"🆕 What should I do with this?\n{url}", _new_kbd(r["id"]))
+            elif r and r.get("status") == "DUPLICATE":
+                _dup_reply(chat_id, r["id"])
             else:
                 send_message(chat_id, "🔁 Already saved this — skipping.")
         return
@@ -363,7 +411,7 @@ def handle_update(u):
             continue
         sent = True
         if r["status"] == "DUPLICATE":
-            send_message(chat_id, "🔁 Already saved this — skipping.")
+            _dup_reply(chat_id, r["id"])
         elif r["status"] == "ACTIONABLE":
             text_out, kbd = _format_result(r["id"])
             send_message(chat_id, text_out or "✅ done", kbd)
