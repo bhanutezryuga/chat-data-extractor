@@ -138,29 +138,46 @@ def send_reminder(item):
     return send_message(chat_id, body, _revisit_kbd(item["id"]))
 
 
+def _digest_card(item):
+    """One compact digest card: title, category, URL (kept well under Telegram's limit). It has
+    no blank line, so the `rv|` callback's in-place edit keeps the whole card as its base text."""
+    title = (item.get("title") or item.get("content_type") or "a saved item").replace("\n", " ")
+    text = f"📌 {title[:300]}"
+    if item.get("category"):
+        text += f"\n🏷 {item['category']}"
+    if item.get("raw_url"):
+        text += f"\n{item['raw_url'][:2000]}"
+    return text
+
+
 def send_review_digest(chat_id=None):
-    """Send one weekly-review message listing items due to revisit. Returns the count.
-    chat_id=None (the auto weekly send) goes to REMIND_CHAT_ID / the first allow-listed chat."""
-    con = db.connect()
-    rows = [dict(r) for r in revisit.due_within(con, config.DIGEST_LOOKAHEAD_DAYS)]
-    con.close()
+    """Send the weekly review: a short header, then one card per due item (up to
+    DIGEST_MAX_CARDS) carrying Revisited/Snooze/Learned buttons (handled by the `rv|` callback).
+    Items not shown this time rotate in next time (revisit.review_queue orders by least-recently
+    shown). chat_id=None (the auto weekly send) goes to REMIND_CHAT_ID / the first allow-listed
+    chat. Returns True if the review was delivered (header + at least one card, or the
+    "nothing due" note), False otherwise — so the weekly loop can retry a dropped digest."""
     chat = chat_id or config.REMIND_CHAT_ID or next(iter(config.TELEGRAM_ALLOWED_CHAT_IDS), None)
     if not chat:
-        return 0
+        return False
+    con = db.connect()
+    total = revisit.review_count(con)
+    rows = [dict(r) for r in revisit.review_queue(con, config.DIGEST_MAX_CARDS)]
+    con.close()
     if not rows:
-        send_message(chat, "📚 Weekly review — nothing due right now. ✅")
-        return 0
-    lines = [f"📚 Weekly review — {len(rows)} to revisit\n"]
-    for i, r in enumerate(rows[:20], 1):
-        cat = f"  [{r['category']}]" if r.get("category") else ""
-        lines.append(f"{i}. {r.get('title') or r.get('content_type') or 'item'}{cat}")
-        if r.get("raw_url"):
-            lines.append(f"   {r['raw_url']}")
-    if len(rows) > 20:
-        lines.append(f"\n+{len(rows) - 20} more")
-    lines.append("\nOpen Logseq to review.")
-    send_message(chat, "\n".join(lines))
-    return len(rows)
+        return send_message(chat, "📚 Weekly review — nothing due right now. ✅")
+    head = f"📚 Weekly review — {total} due"
+    if total > len(rows):
+        head += (f", showing {len(rows)}.\nThe other {total - len(rows)} rotate in next time — "
+                 "send /review for the next batch.")
+    else:
+        head += "."
+    head += "\nTap ✅ Revisited / 💤 Snooze / 🎓 Learned on each card."
+    if not send_message(chat, head):
+        return False
+    shown = [r["id"] for r in rows if send_message(chat, _digest_card(r), _revisit_kbd(r["id"]))]
+    revisit.mark_shown(shown)
+    return bool(shown)
 
 
 def _format_result(item_id):

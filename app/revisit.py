@@ -78,8 +78,11 @@ def mark(item_id, action):
         con.execute("UPDATE items SET learn_status='learned', progress=100, deadline=NULL, "
                     "updated_at=? WHERE id=?", (db.now(), item_id))
     elif action == "snoozed":
-        con.execute("UPDATE items SET deadline=?, reminded_at=NULL, updated_at=? WHERE id=?",
-                    (_future(config.REVISIT_SNOOZE_DAYS), db.now(), item_id))
+        # reminded_at=now (not NULL): it still re-reminds once the snooze elapses (reminded_at <
+        # deadline), but in the digest's least-recently-shown order it goes to the back, so an
+        # item that keeps getting snoozed can't hog the front of every review (#13).
+        con.execute("UPDATE items SET deadline=?, reminded_at=?, updated_at=? WHERE id=?",
+                    (_future(config.REVISIT_SNOOZE_DAYS), db.now(), db.now(), item_id))
     else:  # revisited: advance a stage and re-arm
         stage = (it["revisit_stage"] or 0) + 1
         con.execute("UPDATE items SET revisit_stage=?, revisit_count=revisit_count+1, deadline=?, "
@@ -119,6 +122,53 @@ def due_within(con, days, limit=200):
     return con.execute(
         f"SELECT * FROM items WHERE learn_status='active' AND deadline IS NOT NULL AND {study} "
         "AND deadline <= ? ORDER BY deadline LIMIT ?", (*args, _future(days), limit)).fetchall()
+
+
+def _review_where():
+    """(sql, args) for THE definition of "due for review", shared by the weekly digest, `/review`
+    and the dashboard's "Due to review" tile/list (so their counts always agree):
+
+      an active, study-category item whose deadline has passed, OR whose deadline falls within
+      the next DIGEST_LOOKAHEAD_DAYS and that the user hasn't acted on (revisited/snoozed) within
+      that window.
+
+    The second clause keeps the weekly look-ahead (so items coming due mid-week aren't a week
+    late) without re-listing something the user just revisited — it only returns once its new
+    deadline actually passes."""
+    study, args = _study_sql()
+    now = db.now()
+    sql = (f"learn_status='active' AND deadline IS NOT NULL AND {study} AND ("
+           "deadline <= ? OR (deadline <= ? AND NOT EXISTS (SELECT 1 FROM revisits r "
+           "WHERE r.item_id=items.id AND r.created_at > ?)))")
+    return sql, [*args, now, _future(config.DIGEST_LOOKAHEAD_DAYS), _future(-config.DIGEST_LOOKAHEAD_DAYS)]
+
+
+def review_queue(con, limit=None):
+    """Items due for review (see _review_where), least-recently-shown first: never-shown items,
+    then those shown longest ago, then by deadline — so successive digests rotate through the
+    whole backlog instead of repeating the oldest few."""
+    where, args = _review_where()
+    q = (f"SELECT * FROM items WHERE {where} "
+         "ORDER BY (reminded_at IS NOT NULL), reminded_at, deadline")
+    if limit:
+        q += " LIMIT ?"
+        args.append(int(limit))
+    return con.execute(q, args).fetchall()
+
+
+def review_count(con):
+    where, args = _review_where()
+    return con.execute(f"SELECT count(*) n FROM items WHERE {where}", args).fetchone()["n"]
+
+
+def mark_shown(item_ids):
+    """Record that these items were delivered in a digest (drives the rotation order)."""
+    if not item_ids:
+        return
+    con = db.connect()
+    con.executemany("UPDATE items SET reminded_at=? WHERE id=?", [(db.now(), i) for i in item_ids])
+    con.commit()
+    con.close()
 
 
 def _mark_reminded(item_id):

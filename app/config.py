@@ -62,6 +62,9 @@ REMIND_CHAT_ID        = os.environ.get("REMIND_CHAT_ID", "").strip()       # whe
 REVISIT_MODE          = os.environ.get("REVISIT_MODE", "digest").strip().lower()
 DIGEST_INTERVAL_DAYS  = int(os.environ.get("DIGEST_INTERVAL_DAYS", "7"))    # how often the auto digest is sent
 DIGEST_LOOKAHEAD_DAYS = int(os.environ.get("DIGEST_LOOKAHEAD_DAYS", "7"))   # include items due within this window (+ overdue)
+DIGEST_MAX_CARDS      = max(1, int(os.environ.get("DIGEST_MAX_CARDS", "10")))  # item cards per digest / `/review` (rest rotate in next time)
+# Which items get revisited at all: only "study" categories — the same LOGSEQ_TODO_CATEGORIES set
+# below that decides Logseq's revisit TODOs (one shared value, see revisit.is_study).
 
 # --- Logseq knowledge-base export (see docs/LOGSEQ_PLAN.md). Off unless a graph dir is set. ---
 LOGSEQ_GRAPH_DIR    = os.environ.get("LOGSEQ_GRAPH_DIR", "").strip()        # path to your Logseq graph *root* (contains pages/ journals/)
