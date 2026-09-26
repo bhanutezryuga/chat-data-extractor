@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 _TMP = tempfile.mkdtemp(prefix="cde_dedup_")
+os.environ["CDE_SKIP_DOTENV"] = "1"   # never inherit the real .env (#20)
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["TELEGRAM_BOT_TOKEN"] = ""

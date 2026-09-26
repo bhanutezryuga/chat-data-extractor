@@ -11,6 +11,7 @@ import time
 
 # --- isolate BEFORE importing app (config reads env at import) ---
 _TMP = tempfile.mkdtemp(prefix="cde_test_")
+os.environ["CDE_SKIP_DOTENV"] = "1"   # never inherit the real .env (#20)
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["GEMINI_API_KEY"] = ""        # force offline stub: instant, no network/cost
 os.environ["TELEGRAM_BOT_TOKEN"] = ""    # no real poller

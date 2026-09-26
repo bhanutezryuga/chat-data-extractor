@@ -5,12 +5,13 @@ Runs in a daemon thread started from __main__. Handles:
   - PDF document attachments sent straight to the bot
 """
 import json
+import secrets
 import threading
 import time
 import urllib.request
 from urllib.parse import urlencode
 
-from . import config, db, logseq, pipeline, revisit, sideload, web
+from . import config, db, failures, logseq, pipeline, revisit, sideload, web
 
 API = "https://api.telegram.org/bot{token}/{method}"
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -31,25 +32,60 @@ def _call(method, **params):
         return json.loads(r.read().decode())
 
 
-def send_message(chat_id, text, kbd=None):
-    params = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
-    if kbd:
-        params["reply_markup"] = json.dumps(kbd)
+TG_MAX_TEXT = 4096     # Telegram rejects message text longer than this
+
+
+def _chunks(text, limit=TG_MAX_TEXT):
+    """Split text into pieces <= limit, preferring to break at a newline."""
+    text = text or ""
+    out = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit + 1)
+        if cut <= 0:
+            out.append(text[:limit])
+            text = text[limit:]
+        else:
+            out.append(text[:cut])
+            text = text[cut + 1:]
+    out.append(text)
+    return out
+
+
+def _safe_call(method, chat_id, **params):
+    """Call the Bot API; log and return False on any failure (exception or ok:false)."""
     try:
-        _call("sendMessage", **params)
-    except Exception:
-        pass
+        res = _call(method, chat_id=chat_id, **params)
+    except Exception as e:
+        print(f"  [telegram] {method} failed for chat {chat_id}: {str(e)[:300]}")
+        return False
+    if isinstance(res, dict) and res.get("ok") is False:
+        print(f"  [telegram] {method} failed for chat {chat_id}: {str(res.get('description'))[:300]}")
+        return False
+    return True
+
+
+def send_message(chat_id, text, kbd=None):
+    """Send text (split into <=4096-char messages if needed; the keyboard rides on the last one).
+    Returns True only if every part was sent; failures are logged, never raised."""
+    parts = _chunks(text)
+    ok = True
+    for i, part in enumerate(parts):
+        params = {"text": part, "disable_web_page_preview": True}
+        if kbd and i == len(parts) - 1:
+            params["reply_markup"] = json.dumps(kbd)
+        ok = _safe_call("sendMessage", chat_id, **params) and ok
+    return ok
 
 
 def edit_message_text(chat_id, message_id, text, kbd=None):
-    params = {"chat_id": chat_id, "message_id": message_id, "text": text,
-              "disable_web_page_preview": True}
+    """Edit a message in place (text truncated to Telegram's limit). Returns True on success."""
+    text = text or ""
+    if len(text) > TG_MAX_TEXT:
+        text = text[:TG_MAX_TEXT - 1] + "…"
+    params = {"message_id": message_id, "text": text, "disable_web_page_preview": True}
     if kbd:
         params["reply_markup"] = json.dumps(kbd)
-    try:
-        _call("editMessageText", **params)
-    except Exception:
-        pass
+    return _safe_call("editMessageText", chat_id, **params)
 
 
 def _action_kbd(item_id, active):
@@ -86,10 +122,11 @@ def _reminder_chat(item):
 
 
 def send_reminder(item):
-    """Send a spaced-repetition revisit nudge for one item (called by the scheduler)."""
+    """Send a spaced-repetition revisit nudge for one item (called by the scheduler).
+    Returns True only if it was delivered, so the scheduler can retry a dropped one."""
     chat_id = _reminder_chat(item)
     if not chat_id:
-        return
+        return False
     title = item.get("title") or item.get("content_type") or "a saved item"
     cat = item.get("category")
     n = item.get("revisit_count") or 0
@@ -99,32 +136,49 @@ def send_reminder(item):
         body += f"\n🏷 {cat}"
     if item.get("raw_url"):
         body += f"\n{item['raw_url']}"
-    send_message(chat_id, body, _revisit_kbd(item["id"]))
+    return send_message(chat_id, body, _revisit_kbd(item["id"]))
+
+
+def _digest_card(item):
+    """One compact digest card: title, category, URL (kept well under Telegram's limit). It has
+    no blank line, so the `rv|` callback's in-place edit keeps the whole card as its base text."""
+    title = (item.get("title") or item.get("content_type") or "a saved item").replace("\n", " ")
+    text = f"📌 {title[:300]}"
+    if item.get("category"):
+        text += f"\n🏷 {item['category']}"
+    if item.get("raw_url"):
+        text += f"\n{item['raw_url'][:2000]}"
+    return text
 
 
 def send_review_digest(chat_id=None):
-    """Send one weekly-review message listing items due to revisit. Returns the count.
-    chat_id=None (the auto weekly send) goes to REMIND_CHAT_ID / the first allow-listed chat."""
-    con = db.connect()
-    rows = [dict(r) for r in revisit.due_within(con, config.DIGEST_LOOKAHEAD_DAYS)]
-    con.close()
+    """Send the weekly review: a short header, then one card per due item (up to
+    DIGEST_MAX_CARDS) carrying Revisited/Snooze/Learned buttons (handled by the `rv|` callback).
+    Items not shown this time rotate in next time (revisit.review_queue orders by least-recently
+    shown). chat_id=None (the auto weekly send) goes to REMIND_CHAT_ID / the first allow-listed
+    chat. Returns True if the review was delivered (header + at least one card, or the
+    "nothing due" note), False otherwise — so the weekly loop can retry a dropped digest."""
     chat = chat_id or config.REMIND_CHAT_ID or next(iter(config.TELEGRAM_ALLOWED_CHAT_IDS), None)
     if not chat:
-        return 0
+        return False
+    con = db.connect()
+    total = revisit.review_count(con)
+    rows = [dict(r) for r in revisit.review_queue(con, config.DIGEST_MAX_CARDS)]
+    con.close()
     if not rows:
-        send_message(chat, "📚 Weekly review — nothing due right now. ✅")
-        return 0
-    lines = [f"📚 Weekly review — {len(rows)} to revisit\n"]
-    for i, r in enumerate(rows[:20], 1):
-        cat = f"  [{r['category']}]" if r.get("category") else ""
-        lines.append(f"{i}. {r.get('title') or r.get('content_type') or 'item'}{cat}")
-        if r.get("raw_url"):
-            lines.append(f"   {r['raw_url']}")
-    if len(rows) > 20:
-        lines.append(f"\n+{len(rows) - 20} more")
-    lines.append("\nOpen Logseq to review.")
-    send_message(chat, "\n".join(lines))
-    return len(rows)
+        return send_message(chat, "📚 Weekly review — nothing due right now. ✅")
+    head = f"📚 Weekly review — {total} due"
+    if total > len(rows):
+        head += (f", showing {len(rows)}.\nThe other {total - len(rows)} rotate in next time — "
+                 "send /review for the next batch.")
+    else:
+        head += "."
+    head += "\nTap ✅ Revisited / 💤 Snooze / 🎓 Learned on each card."
+    if not send_message(chat, head):
+        return False
+    shown = [r["id"] for r in rows if send_message(chat, _digest_card(r), _revisit_kbd(r["id"]))]
+    revisit.mark_shown(shown)
+    return bool(shown)
 
 
 def _format_result(item_id):
@@ -191,14 +245,21 @@ def _handle_callback(cb):
     if kind == "new":                                   # pre-process choice: process now with this action
         _call("answerCallbackQuery", callback_query_id=cb_id, text=f"Processing as {action}…")
         try:
-            pipeline.process_pending(item_id, action)
+            res = pipeline.process_pending(item_id, action)
         except Exception as e:
             if chat_id and mid:
-                edit_message_text(chat_id, mid, f"⚠️ Failed: {e}")
+                edit_message_text(chat_id, mid, f"⚠️ Failed: {e}\nSend /retry to try again.")
             return
         if chat_id and mid:
-            text, kbd = _format_result(item_id)
-            edit_message_text(chat_id, mid, text or "done", kbd)
+            if (res or {}).get("status") in ("FAILED", "NEEDS_REVIEW"):
+                edit_message_text(chat_id, mid, _ack(item_id))
+            else:
+                text, kbd = _format_result(item_id)
+                edit_message_text(chat_id, mid, text or "done", kbd)
+        return
+
+    if kind == "ag":                                    # /archivegone confirm / cancel (item_id = preview token)
+        _archive_callback(cb_id, chat_id, mid, item_id, action)
         return
 
     res = pipeline.set_action(item_id, action)          # post-process override
@@ -220,17 +281,138 @@ def _download_file(file_id, limit=20_000_000):
         return r.read(limit)
 
 
-def _ack(results):
-    lines = []
-    for r in results:
-        if not r:
-            continue
-        icon = {"ACTIONABLE": "✅", "NEEDS_REVIEW": "🔎", "FAILED": "⚠️"}.get(r["status"], "•")
-        line = f"{icon} {r.get('content_type') or '?'} → {r['status']}"
-        if r.get("task"):
-            line += f"\n   📌 {r['task']}"
-        lines.append(line)
-    return "\n".join(lines) if lines else None
+def _ack(item_id):
+    """Plain-language reply for a capture that ended FAILED / NEEDS_REVIEW: why (the same
+    failures.classify label the dashboard shows) plus a concrete next step."""
+    con = db.connect()
+    it = con.execute(
+        "SELECT i.status, i.content_type, i.raw_url, "
+        "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
+        " ORDER BY p.created_at DESC LIMIT 1) AS reason FROM items i WHERE i.id=?", (item_id,)).fetchone()
+    con.close()
+    if not it:
+        return "⚠️ Couldn't save this — send /retry to try again."
+    category, label = failures.classify(it["reason"])
+    what = it["content_type"] if it["content_type"] not in (None, "", "unknown") else "link"
+    head = (f"⚠️ Couldn't save this {what}" if it["status"] == "FAILED"
+            else f"🔎 Couldn't read this {what}")
+    return (f"{head} — {label.rstrip('.')}.\n{failures.next_step(category)}"
+            + (f"\n{it['raw_url']}" if it["raw_url"] else ""))
+
+
+def _pending_url(item_id):
+    """The raw_url of an item still waiting for a `new <link>` choice, else None."""
+    con = db.connect()
+    r = con.execute("SELECT raw_url FROM items WHERE id=? AND status='AWAITING_ACTION'",
+                    (item_id,)).fetchone()
+    con.close()
+    return (r["raw_url"] or "(no link)") if r else None
+
+
+def _reoffer(chat_id, item_id, url):
+    """Re-show the `new <link>` chooser for an item nobody picked an action for yet."""
+    send_message(chat_id, f"⏳ You haven't picked an action for this yet:\n{url}", _new_kbd(item_id))
+
+
+def _dup_reply(chat_id, item_id):
+    """A link that's already saved: re-offer the chooser if it's still pending, else skip."""
+    url = _pending_url(item_id)
+    if url:
+        _reoffer(chat_id, item_id, url)
+    else:
+        send_message(chat_id, "🔁 Already saved this — skipping.")
+
+
+_archive_previews = {}    # token -> item ids shown in an /archivegone preview (in-memory; lost on restart)
+_ARCHIVE_SAMPLE = 5
+
+
+def _archive_preview(chat_id):
+    """/archivegone step 1: dry-run, show the count + a few URLs, and offer Archive / Cancel."""
+    res = sideload.archive_gone(execute=False, sideload_only=False, out=lambda *a, **k: None)
+    items = res.get("items") or []
+    if not items:
+        send_message(chat_id, "✅ No stuck items look permanently gone (404/410) — nothing to archive.")
+        return
+    token = secrets.token_hex(4)
+    _archive_previews[token] = [it["id"] for it in items]
+    lines = [f"🗑 {len(items)} stuck item(s) look permanently gone (404/410):"]
+    lines += [f"• {it['raw_url'] or it['id']}" for it in items[:_ARCHIVE_SAMPLE]]
+    if len(items) > _ARCHIVE_SAMPLE:
+        lines.append(f"+{len(items) - _ARCHIVE_SAMPLE} more")
+    lines.append("Archive them? They'll leave the failures list and won't be retried.")
+    kbd = {"inline_keyboard": [[{"text": "🗑 Archive", "callback_data": f"ag|{token}|confirm"},
+                                {"text": "✖ Cancel", "callback_data": f"ag|{token}|cancel"}]]}
+    send_message(chat_id, "\n".join(lines), kbd)
+
+
+def _archive_callback(cb_id, chat_id, mid, token, action):
+    """/archivegone step 2: archive exactly the previewed items, or cancel. One use per preview."""
+    ids = _archive_previews.pop(token, None)
+    if ids is None:
+        _call("answerCallbackQuery", callback_query_id=cb_id, text="This preview expired — send /archivegone again.")
+        return
+    if action != "confirm":
+        _call("answerCallbackQuery", callback_query_id=cb_id, text="Cancelled")
+        if chat_id and mid:
+            edit_message_text(chat_id, mid, "✖ Cancelled — nothing was archived.")
+        return
+    res = sideload.archive_gone(execute=True, sideload_only=False, ids=ids, out=lambda *a, **k: None)
+    done = f"🗑 Archived {res['archived']} permanently-gone item(s)."
+    _call("answerCallbackQuery", callback_query_id=cb_id, text=done[:180])
+    if chat_id and mid:
+        edit_message_text(chat_id, mid, done)
+
+
+_LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0", ""}
+
+
+def _help_text(chat_id):
+    """/start and /help. Plain text on purpose (no parse_mode), so nothing needs escaping."""
+    url = f"http://{config.HOST}:{config.PORT}"
+    if config.HOST in _LOOPBACK:
+        dash = ("Dashboard: open it on this computer (the one running the bot), not your phone:\n"
+                f"  http://127.0.0.1:{config.PORT}")
+    else:
+        dash = f"Dashboard: {url}"
+    lines = [
+        "Send a link (or a PDF) and I'll process it automatically.",
+        "",
+        "new <link> - choose the action first (Note / List / Translate / Auto)",
+        "/pending - links from 'new' still waiting for you to pick an action",
+        "/note <text> - save a personal note, no link needed",
+        "/review - what's due to revisit this week",
+        "/retry - reprocess stuck or failed items",
+        "/archivegone - preview stuck items that are permanently gone (404/410), then confirm",
+    ]
+    if logseq.active():
+        lines.append("/export - write everything to your Logseq graph")
+    lines += [
+        "/help - show this message",
+        "",
+        "Revisit reminders come with Revisited / Snooze / Learned buttons.",
+        f"Your chat id: {chat_id} (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)",
+        dash,
+    ]
+    return "\n".join(lines)
+
+
+_PENDING_MAX = 10
+
+
+def _send_pending(chat_id):
+    """/pending — re-send the chooser for every `new <link>` item still awaiting a choice."""
+    con = db.connect()
+    rows = con.execute("SELECT id, raw_url FROM items WHERE user_id=? AND status='AWAITING_ACTION' "
+                       "ORDER BY created_at", (config.USER_ID,)).fetchall()
+    con.close()
+    if not rows:
+        send_message(chat_id, "✅ Nothing pending — every saved link has an action.")
+        return
+    send_message(chat_id, f"⏳ {len(rows)} link(s) waiting for you to pick an action"
+                 + (f" — showing the oldest {_PENDING_MAX}" if len(rows) > _PENDING_MAX else "") + ":")
+    for r in rows[:_PENDING_MAX]:
+        _reoffer(chat_id, r["id"], r["raw_url"] or "(no link)")
 
 
 def handle_update(u):
@@ -247,17 +429,8 @@ def handle_update(u):
     text = msg.get("text") or msg.get("caption") or ""
 
     low = text.strip().lower()
-    if low.startswith("/start"):
-        send_message(chat_id,
-                     "Send a link and I'll auto-process it, or use `new <link>` to choose the "
-                     "action first (Note / List / Translate / Auto).\n"
-                     "`/review` → what's due to revisit this week.\n"
-                     "`/retry` → reprocess stuck/failed items.\n"
-                     "`/archivegone` → clear stuck items that are permanently gone (404/410).\n"
-                     "`/note <text>` → jot a personal note, no link needed.\n"
-                     + ("`/export` → write everything to your Logseq graph.\n" if logseq.active() else "")
-                     + f"Your chat id: {chat_id}  (put it in TELEGRAM_ALLOWED_CHAT_IDS to lock the bot)\n"
-                     f"Dashboard: http://{config.HOST}:{config.PORT}")
+    if low.startswith("/start") or low.startswith("/help"):
+        send_message(chat_id, _help_text(chat_id))
         return
 
     if low.startswith("/export"):
@@ -267,6 +440,10 @@ def handle_update(u):
             n = logseq.export_all()
             send_message(chat_id, f"⤓ Exported {n} new item(s) to your Logseq graph." if n
                          else "✅ Logseq graph already up to date — no new items to export.")
+        return
+
+    if low.startswith("/pending"):         # re-offer the chooser for `new <link>` items left undecided
+        _send_pending(chat_id)
         return
 
     if low.startswith("/review"):          # on-demand weekly review digest
@@ -290,9 +467,8 @@ def handle_update(u):
         threading.Thread(target=_run, daemon=True).start()
         return
 
-    if low.startswith("/archivegone"):     # clear permanently-404/410 stuck items
-        res = sideload.archive_gone(execute=True, sideload_only=False, out=lambda *a, **k: None)
-        send_message(chat_id, f"🗑 Archived {res['archived']} permanently-gone item(s).")
+    if low.startswith("/archivegone"):     # preview permanently-404/410 stuck items; archive on confirm
+        _archive_preview(chat_id)
         return
 
     if low.startswith("/note"):            # jot a manual note — no link needed
@@ -323,6 +499,8 @@ def handle_update(u):
                                         source_chat_id=str(chat_id), source_msg_id=f"new{msg_id}:{i}")
             if r and r.get("status") == "AWAITING_ACTION":
                 send_message(chat_id, f"🆕 What should I do with this?\n{url}", _new_kbd(r["id"]))
+            elif r and r.get("status") == "DUPLICATE":
+                _dup_reply(chat_id, r["id"])
             else:
                 send_message(chat_id, "🔁 Already saved this — skipping.")
         return
@@ -354,13 +532,12 @@ def handle_update(u):
             continue
         sent = True
         if r["status"] == "DUPLICATE":
-            send_message(chat_id, "🔁 Already saved this — skipping.")
+            _dup_reply(chat_id, r["id"])
         elif r["status"] == "ACTIONABLE":
             text_out, kbd = _format_result(r["id"])
             send_message(chat_id, text_out or "✅ done", kbd)
         else:
-            icon = {"NEEDS_REVIEW": "🔎", "FAILED": "⚠️"}.get(r["status"], "•")
-            send_message(chat_id, f"{icon} {r.get('content_type') or '?'} → {r['status']}")
+            send_message(chat_id, _ack(r["id"]))
     if not sent and not doc:
         send_message(chat_id, "I didn't find a link or PDF in that message. Send me a URL or a PDF file.")
 

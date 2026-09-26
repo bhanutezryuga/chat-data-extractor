@@ -16,6 +16,7 @@ if hasattr(sys.stdout, "reconfigure"):    # Windows console (cp1252) can't print
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # some labels carry
 
 _TMP = tempfile.mkdtemp(prefix="cde_failures_")
+os.environ["CDE_SKIP_DOTENV"] = "1"   # never inherit the real .env (#20)
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
