@@ -43,11 +43,23 @@
   .arch-toggle { font-weight: 400; color: #64748b; text-transform: none; letter-spacing: 0; margin-left: 8px; }
   .sec h2 code { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 1px 6px; font-size: 11px; color: #cbd5e1; text-transform: none; letter-spacing: 0; }
   #attention h2 { color: #f59e0b; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #archived-sec h2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .att-actions { display: flex; gap: 8px; align-items: center; font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: auto; }
   .att-actions button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
   .att-actions button:hover:not(:disabled) { border-color: #64748b; }
   .att-actions button:disabled { opacity: .5; cursor: default; }
   #retry-status { color: #94a3b8; font-weight: 400; }
+  .notice { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #1e293b; border: 1px solid #334155; border-left: 3px solid #64748b; border-radius: 8px; padding: 10px 12px; margin-bottom: 18px; font-size: 13px; color: #e2e8f0; }
+  .notice[hidden], .notice [hidden] { display: none; }   /* display:flex would otherwise override `hidden` */
+  .notice .grow { flex: 1; min-width: 180px; }
+  .notice button, .linkbtn { background: none; border: 1px solid #334155; color: #93c5fd; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .notice button:hover, .linkbtn:hover { border-color: #64748b; }
+  .notice .dismiss { border: none; color: #64748b; padding: 3px 6px; }
+  #due-sec h2 { color: #0ea5e9; }
+  .due-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .due-actions button { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .due-actions button:hover:not(:disabled) { border-color: #64748b; }
+  .due-actions button:disabled { opacity: .5; cursor: default; }
   .empty { color: #475569; font-size: 13px; }
   footer { text-align: center; color: #64748b; font-size: 11px; padding: 16px; }
 </style>
@@ -63,6 +75,13 @@
 
 <main>
   <div class="tiles" id="tiles"></div>
+  <!-- Stays put after "Archive gone" (even if Needs attention empties) so the user sees what moved and can undo. -->
+  <div class="notice" id="archive-notice" role="status" hidden>
+    <span class="grow" id="archive-notice-text"></span>
+    <button onclick="showArchived()">Show them</button>
+    <button id="btn-undo-archive" onclick="undoArchive()">↩ Undo</button>
+    <button class="dismiss" onclick="hideArchiveNotice()" aria-label="Dismiss">✕</button>
+  </div>
   <section class="sec" id="attention" hidden>
     <h2>⚠ Needs attention (<span id="att-count">0</span>)
       <span class="att-actions">
@@ -73,10 +92,19 @@
     </h2>
     <div class="rec" id="att-list"></div>
   </section>
+  <section class="sec" id="due-sec" hidden>
+    <h2>📚 Due to review (<span id="due-count">0</span>)</h2>
+    <div class="rec" id="due-list"></div>
+  </section>
+  <section class="sec" id="pending-sec" hidden>
+    <h2>🆕 Waiting for an action (<span id="pending-count">0</span>)</h2>
+    <div class="rec" id="pending-list"></div>
+  </section>
   <div class="sec"><h2>By category</h2><div class="cats" id="cats"></div></div>
   <div class="sec"><h2>Recent captures</h2><div class="rec" id="recent"></div></div>
   <section class="sec" id="archived-sec" hidden>
-    <h2 style="cursor:pointer" onclick="toggleArchived()">🗑 Archived (<span id="arch-count">0</span>)<span class="arch-toggle" id="arch-toggle">▸ show</span></h2>
+    <h2><span style="cursor:pointer" onclick="toggleArchived()">🗑 Archived (<span id="arch-count">0</span>)<span class="arch-toggle" id="arch-toggle">▸ show</span></span>
+      <span class="att-actions"><button class="linkbtn" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">↑ Back to top</button></span></h2>
     <div class="rec" id="archived-list" hidden></div>
   </section>
 </main>
@@ -118,9 +146,100 @@ function renderArchived(arch){
         </div>
         ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
         ${it.error_label?`<div class="reason" style="color:${ERR_COLOR[it.error_category]||'#64748b'}">${esc(it.error_label)}</div>`:''}
+        <div class="due-actions" data-kind="restore"><button data-id="${esc(it.id)}">↩ Restore</button></div>
       </div>`).join('');
   }
 }
+
+// ---- after "Archive gone": say what moved, and offer a way back ----
+let _lastArchiveIds = [];
+
+function showArchiveNotice(text, canUndo){
+  document.getElementById('archive-notice-text').textContent = text;
+  document.getElementById('btn-undo-archive').hidden = !canUndo;
+  document.getElementById('archive-notice').hidden = false;
+}
+
+function hideArchiveNotice(){ document.getElementById('archive-notice').hidden = true; }
+
+function showArchived(){
+  archivedExpanded = true;
+  renderArchived(_lastArchived);
+  document.getElementById('archived-sec').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function undoArchive(){
+  const { ok, data } = await apiPost('/api/unarchive', { ids: _lastArchiveIds });
+  _lastArchiveIds = [];
+  showArchiveNotice(ok ? `↩ Restored ${data.restored||0} item(s) to Needs attention.` : (data.error || 'Undo failed'), false);
+  refresh();
+}
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-kind="restore"] button');
+  if (!b) return;
+  b.disabled = true;
+  const { ok, data } = await apiPost('/api/unarchive', { ids: [b.dataset.id] });
+  showArchiveNotice(ok ? `↩ Restored ${data.restored||0} item(s) to Needs attention.` : (data.error || 'Restore failed'), false);
+  refresh();
+});
+
+// "Due to review": the same set /review sends (study items, overdue or due this week).
+function renderDue(due){
+  const sec = document.getElementById('due-sec');
+  if (!due || !due.count) { sec.hidden = true; return; }
+  sec.hidden = false;
+  document.getElementById('due-count').textContent = due.count;
+  document.getElementById('due-list').innerHTML = (due.items||[]).map(it => `
+    <div class="item">
+      <div class="top">
+        <span class="t">${esc(it.title || it.content_type || '(no title)')}${it.category?`<span class="catbadge">${esc(it.category)}</span>`:''}</span>
+      </div>
+      ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
+      <div class="due-actions">
+        <button data-id="${esc(it.id)}" data-act="revisited">✅ Revisited</button>
+        <button data-id="${esc(it.id)}" data-act="snoozed">💤 Snooze</button>
+        <button data-id="${esc(it.id)}" data-act="learned">🎓 Learned</button>
+      </div>
+    </div>`).join('');
+}
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('.due-actions:not([data-kind]) button');   // revisit buttons only (not pending/restore)
+  if (!b) return;
+  b.parentElement.querySelectorAll('button').forEach(x => x.disabled = true);
+  const { ok, data } = await apiPost('/api/revisit', { id: b.dataset.id, action: b.dataset.act });
+  if (!ok) { alert(data.error || 'failed'); }
+  refresh();
+});
+
+// Links saved with `new <link>` that never got an action chosen (#17): process or drop them here.
+function renderPending(p){
+  const sec = document.getElementById('pending-sec');
+  if (!p || !p.count) { sec.hidden = true; return; }
+  sec.hidden = false;
+  document.getElementById('pending-count').textContent = p.count;
+  document.getElementById('pending-list').innerHTML = (p.items||[]).map(it => `
+    <div class="item">
+      ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
+      <div class="due-actions" data-kind="pending">
+        <button data-id="${esc(it.id)}" data-act="note">📝 Note</button>
+        <button data-id="${esc(it.id)}" data-act="list">📋 List</button>
+        <button data-id="${esc(it.id)}" data-act="translate">🌐 Translate</button>
+        <button data-id="${esc(it.id)}" data-act="auto">✨ Auto</button>
+        <button data-id="${esc(it.id)}" data-act="drop">🗑 Drop</button>
+      </div>
+    </div>`).join('');
+}
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-kind="pending"] button');
+  if (!b) return;
+  b.parentElement.querySelectorAll('button').forEach(x => x.disabled = true);
+  const { ok, data } = await apiPost('/api/pending', { id: b.dataset.id, action: b.dataset.act });
+  if (!ok) { alert(data.error || 'failed'); }
+  refresh();
+});
 
 async function doRetry(){
   const btn = document.getElementById('btn-retry');
@@ -135,7 +254,14 @@ async function doArchiveGone(){
   const btn = document.getElementById('btn-archive');
   btn.disabled = true;
   const { ok, data } = await apiPost('/api/archive-gone', {});
-  document.getElementById('retry-status').textContent = ok ? `archived ${data.archived||0}` : (data.error || 'failed');
+  if (ok) {
+    _lastArchiveIds = (data.items||[]).map(it => it.id);
+    const n = data.archived || 0;
+    showArchiveNotice(`🗑 Archived ${n} permanently-gone item${n === 1 ? '' : 's'} — moved to the Archived section at the bottom.`,
+                      _lastArchiveIds.length > 0);
+  } else {
+    showArchiveNotice(data.error || 'Archive failed', false);
+  }
   refresh();
 }
 
@@ -152,9 +278,12 @@ function renderUsage(u){
 }
 
 async function refresh(){
-  const [stats, use, items, fails, arch] = await Promise.all(
-    [api('/api/stats'), api('/api/usage'), api('/api/items'), api('/api/failures'), api('/api/archived')]);
+  const [stats, use, items, fails, arch, due, pending] = await Promise.all(
+    [api('/api/stats'), api('/api/usage'), api('/api/items'), api('/api/failures'), api('/api/archived'),
+     api('/api/due'), api('/api/pending')]);
   renderUsage(use);
+  renderDue(due);
+  renderPending(pending);
   renderArchived(arch);
 
   // "Needs attention" — shown ONLY when there are FAILED / NEEDS_REVIEW items
@@ -183,7 +312,7 @@ async function refresh(){
     const statusEl = document.getElementById('retry-status');
     if (running) {
       statusEl.textContent = 'retrying in background…';
-    } else if (fails.last_retry && !statusEl.textContent.startsWith('archived')) {
+    } else if (fails.last_retry) {
       const lr = fails.last_retry;
       statusEl.textContent = `last retry: reprocessed ${lr.processed||0}, recovered ${lr.recovered||0}`;
     }

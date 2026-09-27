@@ -42,3 +42,23 @@ def classify(reason):
         if pattern.search(r):
             return category, label
     return "error", (r[:140] or "Unknown error")
+
+
+# What the user can do about each category (shown in the Telegram reply for a stuck capture).
+_TRY_LATER = "I'll keep it — send /retry in a little while."
+_NEXT_STEP = {
+    "gone": "Nothing to do — the post no longer exists. /archivegone clears these.",
+    "login_expired": "Your Instagram cookie needs refreshing: re-export ig_cookies.txt, then send /retry.",
+    "rate_limited": _TRY_LATER,
+    "unavailable": _TRY_LATER,
+    "timeout": _TRY_LATER,
+    "budget": "I'll keep it — send /retry after the daily budget resets.",
+    "blocked": "I can't fetch this address. Save it by hand with /note <text> if it matters.",
+    "unsupported": "I can't read this kind of link. Save it by hand with /note <text> instead.",
+    "no_content": "Send /retry to try again, or save it by hand with /note <text>.",
+}
+
+
+def next_step(category):
+    """A short, concrete next step for a failure category (see classify)."""
+    return _NEXT_STEP.get(category, "Send /retry to try again.")

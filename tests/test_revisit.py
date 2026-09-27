@@ -10,11 +10,15 @@ import sys
 import tempfile
 
 _TMP = tempfile.mkdtemp(prefix="cde_revisit_")
+os.environ["CDE_SKIP_DOTENV"] = "1"   # never inherit the real .env (#20)
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["GEMINI_API_KEY"] = ""        # stub mode
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
 os.environ["LOGSEQ_GRAPH_DIR"] = ""       # NEVER write to a real graph from tests (isolate from .env)
 os.environ["REVISIT_SCHEDULE"] = "1,3,7"  # deterministic 3-stage schedule
+os.environ["LOGSEQ_TODO_CATEGORIES"] = "Learning,Reading"   # the study set (isolate from .env)
+os.environ["TELEGRAM_ALLOWED_CHAT_IDS"] = ""
+os.environ["REMIND_CHAT_ID"] = ""
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import config, db, pipeline, revisit   # noqa: E402
@@ -84,7 +88,50 @@ check("all in Wishlist collection", all(c["collection"] == "Wishlist" for c in c
 check("real link kept", any(c["link"] == "keychron.com/k2" for c in coll))
 check("'link not available' stored as NULL", any(c["name"] == "NuPhy Air75" and c["link"] is None for c in coll))
 
-# --- revisit scheduling ---
+# --- revisit scheduling is for study categories only (#12) ---
+check("Shopping (non-study) capture is NOT scheduled", it["deadline"] is None, str(it["deadline"]))
+for cat in ("Cooking", "Watching", "Listening", "Other"):
+    x = _make_item(f"https://example.com/{cat.lower()}")
+    con = db.connect()
+    pipeline._write_knowledge(con, x, {"title": cat, "category": cat})
+    con.commit()
+    con.close()
+    check(f"{cat} capture is NOT scheduled", _item(x)["deadline"] is None)
+
+# a Reading capture is still scheduled — the rest of the schedule tests run on it
+iid = _make_item("https://blog.example.com/decorators")
+con = db.connect()
+pipeline._write_knowledge(con, iid, {"title": "Python decorators", "category": "reading"})
+con.commit()
+con.close()
+it = _item(iid)
+check("Reading capture IS scheduled", it["category"] == "Reading" and it["deadline"] is not None)
+lrn = _make_item("https://course.example.com/sql")
+con = db.connect()
+pipeline._write_knowledge(con, lrn, {"title": "SQL course", "category": "Learning"})
+con.commit()
+con.close()
+check("Learning capture IS scheduled", _item(lrn)["deadline"] is not None)
+
+# the study set is the single shared config value LOGSEQ_TODO_CATEGORIES (also drives Logseq TODOs)
+_orig_cats = config.LOGSEQ_TODO_CATEGORIES
+config.LOGSEQ_TODO_CATEGORIES = {"Cooking"}
+ck = _make_item("https://example.com/pasta")
+con = db.connect()
+pipeline._write_knowledge(con, ck, {"title": "Pasta", "category": "Cooking"})
+con.commit()
+con.close()
+config.LOGSEQ_TODO_CATEGORIES = _orig_cats
+check("schedule_new follows config.LOGSEQ_TODO_CATEGORIES", _item(ck)["deadline"] is not None)
+con = db.connect(); con.execute("UPDATE items SET deadline=NULL WHERE id=?", (ck,)); con.commit(); con.close()
+
+# manual /note items go through the same _write_knowledge -> schedule_new gate
+nr = pipeline.create_note("Buy oat milk and check the tyre pressure this weekend.", source_chat_id="1",
+                          source_msg_id="n1")
+nrow = _item(nr["id"])
+check("manual note follows the study-only rule",
+      (nrow["deadline"] is not None) == revisit.is_study(nrow["category"]), f"{nrow['category']} {nrow['deadline']}")
+
 check("new item scheduled at stage 0", it["revisit_stage"] == 0 and it["deadline"] is not None)
 check("first deadline ~1 day out (schedule[0]=1)", (it["deadline"] or "")[:10] >= db.now()[:10])
 check("starts active", it["learn_status"] == "active")
@@ -136,7 +183,7 @@ check("www. stripped from source", _item(iid2)["source"] == "example.org")
 
 # --- due query ---
 con = db.connect()
-con.execute("UPDATE items SET deadline='2000-01-01 00:00:00' WHERE id=?", (iid2,))  # far past
+con.execute("UPDATE items SET deadline='2000-01-01 00:00:00', category='Reading' WHERE id=?", (iid2,))  # far past
 con.commit()
 due_ids = {r["id"] for r in revisit.due(con)}
 con.close()
@@ -149,6 +196,25 @@ dc = revisit.due_count(con)
 con.close()
 check("due_count >= 1", dc >= 1, str(dc))
 
+# --- legacy non-study rows that were scheduled before #12 drop out of every due query ---
+legacy = _make_item("https://example.com/legacy-recipe")
+con = db.connect()
+con.execute("UPDATE items SET category='Cooking', deadline='2000-01-01 00:00:00', learn_status='active' "
+            "WHERE id=?", (legacy,))
+con.commit()
+before = revisit.due_count(con)
+check("legacy non-study row not in due()", legacy not in {r["id"] for r in revisit.due(con)})
+check("legacy non-study row not in due_within()", legacy not in {r["id"] for r in revisit.due_within(con, 7)})
+con.execute("UPDATE items SET category='Reading' WHERE id=?", (legacy,))
+con.commit()
+check("due_count excludes non-study rows (counts it once it is Reading)", revisit.due_count(con) == before + 1,
+      f"{before} -> {revisit.due_count(con)}")
+con.execute("UPDATE items SET category='Cooking' WHERE id=?", (legacy,))
+con.commit()
+still = con.execute("SELECT deadline FROM items WHERE id=?", (legacy,)).fetchone()["deadline"]
+con.close()
+check("...without destroying the legacy row's schedule data", still == "2000-01-01 00:00:00")
+
 # --- weekly digest: due_within window + digest timing ---
 from datetime import datetime, timezone, timedelta   # noqa: E402
 
@@ -156,7 +222,7 @@ from datetime import datetime, timezone, timedelta   # noqa: E402
 def _set_deadline(iid, days):
     con = db.connect()
     dl = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-    con.execute("UPDATE items SET deadline=?, learn_status='active' WHERE id=?", (dl, iid))
+    con.execute("UPDATE items SET deadline=?, learn_status='active', category='Reading' WHERE id=?", (dl, iid))
     con.commit()
     con.close()
 
