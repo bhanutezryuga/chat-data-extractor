@@ -222,7 +222,7 @@ def archive_gone(*, execute=False, sideload_only=True, out=print, ids=None):
     ids: optionally restrict to these item ids (e.g. exactly what a preview showed). The result's
     "items" lists the matched [{id, raw_url}]."""
     con = db.connect()
-    q = ("SELECT i.id, i.raw_url, "
+    q = ("SELECT i.id, i.raw_url, i.status, "
          "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
          " ORDER BY p.created_at DESC LIMIT 1) AS reason "
          "FROM items i WHERE i.status IN ('FAILED','NEEDS_REVIEW')"
@@ -239,11 +239,40 @@ def archive_gone(*, execute=False, sideload_only=True, out=print, ids=None):
         out("  DRY RUN - add --run to archive them.")
         return {"gone": len(gone), "archived": 0, "items": listed}
     for it in gone:
-        con.execute("UPDATE items SET status='ARCHIVED', updated_at=? WHERE id=?", (db.now(), it["id"]))
-        db.log(con, it["id"], "archive", "ok", "permanently gone (404/410) - archived")
+        archive_item(con, it["id"], it["status"], "permanently gone (404/410) - archived")
     con.close()
     out(f"  archived {len(gone)} item(s) -> ARCHIVED (off the failures panel, never retried)")
     return {"gone": len(gone), "archived": len(gone), "items": listed}
+
+
+_RESTORABLE = ("FAILED", "NEEDS_REVIEW", "AWAITING_ACTION")
+
+
+def archive_item(con, item_id, prev_status, why):
+    """Set an item ARCHIVED, remembering its previous status so unarchive can put it back."""
+    con.execute("UPDATE items SET status='ARCHIVED', updated_at=? WHERE id=?", (db.now(), item_id))
+    db.log(con, item_id, "archive_prev", "ok", prev_status)
+    db.log(con, item_id, "archive", "ok", why)
+
+
+def unarchive(ids):
+    """Undo an archive: put each ARCHIVED item in `ids` back to the status it had before (FAILED if
+    that wasn't recorded). Ids that aren't archived are ignored. Returns {"restored": n, "items": [...]}"""
+    con = db.connect()
+    restored = []
+    for item_id in dict.fromkeys(ids):
+        row = con.execute("SELECT status FROM items WHERE id=?", (item_id,)).fetchone()
+        if not row or row["status"] != "ARCHIVED":
+            continue
+        prev = con.execute("SELECT detail FROM processing_logs WHERE item_id=? AND step='archive_prev' "
+                           "ORDER BY created_at DESC LIMIT 1", (item_id,)).fetchone()
+        status = prev["detail"] if prev and prev["detail"] in _RESTORABLE else "FAILED"
+        con.execute("UPDATE items SET status=?, updated_at=? WHERE id=?", (status, db.now(), item_id))
+        db.log(con, item_id, "unarchive", "ok", f"restored to {status}")
+        restored.append({"id": item_id, "status": status})
+    con.commit()
+    con.close()
+    return {"restored": len(restored), "items": restored}
 
 
 def main(argv=None):

@@ -274,8 +274,7 @@ class Handler(BaseHTTPRequestHandler):
                 con.close()
                 return self._send(404, {"error": "no pending link with that id"})
             if action == "drop":           # archive, don't delete — it stays visible in the archived view
-                con.execute("UPDATE items SET status='ARCHIVED', updated_at=? WHERE id=?", (db.now(), item_id))
-                db.log(con, item_id, "pending", "ok", "dropped by user from the dashboard")
+                sideload.archive_item(con, item_id, "AWAITING_ACTION", "dropped by user from the dashboard")
                 con.commit()
                 con.close()
                 return self._send(200, {"id": item_id, "status": "ARCHIVED"})
@@ -288,6 +287,12 @@ class Handler(BaseHTTPRequestHandler):
             res = sideload.archive_gone(execute=True, sideload_only=bool(body.get("sideload_only")),
                                         out=lambda *a, **k: None)
             return self._send(200, res)
+
+        if path == "/api/unarchive":      # {ids: [...]} -> back to the status each had before archiving
+            ids = body.get("ids")
+            if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+                return self._send(400, {"error": "ids must be a list of item ids"})
+            return self._send(200, sideload.unarchive(ids))
 
         return self._send(404, {"error": "not found"})
 
