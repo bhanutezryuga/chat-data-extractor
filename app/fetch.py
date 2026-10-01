@@ -52,7 +52,15 @@ def fetch(url, strategy):
                 meta.update(fetched=True, source="yt-dlp", uploader=info.get("uploader"),
                             is_video=info.get("is_video"))
                 return (text, None, meta)
-            meta["fetch_error"] = info.get("error", "no metadata (Instagram login/cookies needed?)")
+            err = info.get("error", "no metadata (Instagram login/cookies needed?)")
+            if "instagram.com" in host:                # cookie-free: crawler-served og:description
+                from . import instagram
+                og = instagram.public_caption(url)
+                if og.get("caption"):
+                    meta.update(fetched=True, source="og-crawler", uploader=og.get("uploader"))
+                    return (og["caption"], None, meta)
+                err = f"{err}; og fallback: {og['error']}"
+            meta["fetch_error"] = err
             return ("", None, meta)
 
         if strategy == "pdf":

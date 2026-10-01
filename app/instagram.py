@@ -4,7 +4,11 @@ yt-dlp can't pull Instagram image/carousel URLs, so for Instagram we go straight
 `i.instagram.com/api/v1/media/<id>/info/` using the logged-in `sessionid` from the
 cookies file. Returns the caption + image/video URLs; the caller sends images to
 Gemini vision (carousel "list" posts keep the list inside the images).
+
+Without cookies, `public_caption` still gets the caption: Instagram serves it in
+`og:description` to link-preview crawlers (no media URLs though).
 """
+import html
 import json
 import os
 import re
@@ -81,6 +85,41 @@ def fetch_media(url, max_items=8):
         elif m.get("image_versions2", {}).get("candidates"):
             images.append(m["image_versions2"]["candidates"][0]["url"])
     return {"caption": caption, "uploader": uploader, "images": images, "videos": videos}
+
+
+_CRAWLER_UA = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+
+
+def _http_get(url, headers, limit=3_000_000):
+    from . import netguard
+    if not netguard.is_safe_public_url(url):
+        raise ValueError("blocked non-public URL")
+    with netguard.safe_opener().open(urllib.request.Request(url, headers=headers), timeout=25) as r:
+        return r.read(limit).decode("utf-8", "replace")
+
+
+def parse_og_caption(page):
+    """{caption, uploader} from a crawler-served post page, or None if it has no caption."""
+    m = re.search(r'<meta[^>]+property="og:description"[^>]+content="([^"]*)"', page or "")
+    if not m:
+        return None
+    desc = html.unescape(m.group(1)).strip()
+    # "2,345 likes, 67 comments - user on June 3, 2026: "caption"."
+    p = re.match(r'(?s).*? - (\S+) on [^:]+: "(.*)"\.?$', desc)
+    caption, uploader = (p.group(2), p.group(1)) if p else (desc, None)
+    return {"caption": caption.strip(), "uploader": uploader} if caption.strip() else None
+
+
+def public_caption(url):
+    """Cookie-free caption via the link-preview crawler view. Returns {caption, uploader} or {error}."""
+    sc = shortcode(url)
+    if not sc:
+        return {"error": "not an Instagram post/reel URL"}
+    try:
+        page = _http_get(f"https://www.instagram.com/p/{sc}/", {"User-Agent": _CRAWLER_UA})
+    except Exception as e:
+        return {"error": f"crawler fetch: {e}"}
+    return parse_og_caption(page) or {"error": "no og:description (private, removed or rate-limited?)"}
 
 
 def download(url, limit=20_000_000):
