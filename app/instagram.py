@@ -76,6 +76,9 @@ def fetch_media(url, max_items=8):
         if e.code in (404, 410) and public_caption(url).get("caption"):
             return {"error": f"Instagram API refused the post (HTTP {e.code}) but it is still "
                              "public -> login expired"}
+        # With a live session, a deleted/unavailable post is a 400 with this JSON message.
+        if e.code == 400 and b"Media not found or unavailable" in e.read(2000):
+            return {"error": "Instagram API: Media not found or unavailable (HTTP 400)"}
         return {"error": f"Instagram API: {e}"}
     except Exception as e:
         return {"error": f"Instagram API: {e}"}

@@ -79,6 +79,13 @@ instagram.public_caption = post_not_public
 r = instagram.fetch_media(URL)
 check("still classifies as gone", failures.classify(r.get("error"))[0] == "gone", r.get("error"))
 
+print("logged-in API says the media is gone (HTTP 400 'Media not found or unavailable')")
+public_calls.clear()
+api_returns(400, b'{"message":"Media not found or unavailable","status":"fail"}')
+r = instagram.fetch_media(URL)
+check("classifies as gone", failures.classify(r.get("error"))[0] == "gone", r.get("error"))
+check("no public check needed (the session is alive)", public_calls == [], repr(public_calls))
+
 print("other API errors don't trigger the public check")
 public_calls.clear()
 api_returns(500, b"Oops, an error occurred.")
