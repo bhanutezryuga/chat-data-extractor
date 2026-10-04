@@ -8,7 +8,7 @@ import re
 
 # (pattern, category, human label) — first match wins.
 _RULES = [
-    (re.compile(r'Error 404|Error 410', re.I),
+    (re.compile(r'Error 404|Error 410|Media not found or unavailable', re.I),
         "gone", "Post deleted or removed"),
     (re.compile(r'rate-limit reached or login required|cookies-from-browser|no Instagram cookies '
                 r'configured|login expired', re.I),

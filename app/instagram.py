@@ -12,6 +12,7 @@ import html
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 
 from . import config
@@ -69,6 +70,16 @@ def fetch_media(url, max_items=8):
     try:
         with urllib.request.urlopen(req, timeout=25) as r:
             j = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        # A dead session gets a 404 (the logged-out page) even for live posts -- only call it
+        # gone if the post isn't publicly visible either.
+        if e.code in (404, 410) and public_caption(url).get("caption"):
+            return {"error": f"Instagram API refused the post (HTTP {e.code}) but it is still "
+                             "public -> login expired"}
+        # With a live session, a deleted/unavailable post is a 400 with this JSON message.
+        if e.code == 400 and b"Media not found or unavailable" in e.read(2000):
+            return {"error": "Instagram API: Media not found or unavailable (HTTP 400)"}
+        return {"error": f"Instagram API: {e}"}
     except Exception as e:
         return {"error": f"Instagram API: {e}"}
     items = j.get("items") or []
