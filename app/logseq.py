@@ -53,6 +53,20 @@ def _recipe(v):
         return {}
 
 
+def _sections(v):
+    """Parse the stored `detail`-mode sections JSON into [{heading, points, examples}], dropping
+    malformed or empty entries; [] when absent."""
+    out = []
+    for s in _as_list(v):
+        if not isinstance(s, dict):
+            continue
+        points = [p for p in _as_list(s.get("points")) if str(p).strip()]
+        examples = [e for e in _as_list(s.get("examples")) if str(e).strip()]
+        if points or examples:
+            out.append({"heading": s.get("heading") or "Notes", "points": points, "examples": examples})
+    return out
+
+
 def _oneline(s):
     return re.sub(r"\s+", " ", str(s)).strip()
 
@@ -141,6 +155,21 @@ def render_page(item, extraction, coll_items, task):
         kps = _as_list(ex.get("key_points"))
         if kps:
             blocks.append(_section("## Key points", kps))
+
+    sections = _sections(ex.get("sections"))
+    if sections and not has_recipe:
+        # Detailed notes (the `detail` mode): one bullet per topic, its points, then the examples.
+        # Shown even next to a list — the examples are what the user asked to keep.
+        lines = ["- ## Details"]
+        for s in sections:
+            lines.append(f"\t- **{_oneline(s['heading'])}**")
+            for p in s["points"]:
+                lines.append(f"\t\t- {_oneline(p)}")
+            if s["examples"]:
+                lines.append("\t\t- Examples")
+                for e in s["examples"]:
+                    lines.append(f"\t\t\t- {_oneline(e)}")
+        blocks.append("\n".join(lines))
 
     if (ex.get("translation") or "").strip():
         blocks.append(_section("## Translation", [ex["translation"]]))
@@ -391,6 +420,8 @@ def _has_content(ex):
         return True
     _r = _recipe(ex.get("recipe"))
     if _r.get("ingredients") or _r.get("steps"):
+        return True
+    if _sections(ex.get("sections")):
         return True
     summ = (ex.get("summary") or "").strip()
     if len(summ) < 20:

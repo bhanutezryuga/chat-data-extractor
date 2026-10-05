@@ -28,6 +28,10 @@ SCHEMA_HINT = (
     '"task": {"title": str, "description": str, "suggested_use_case": str, '
     '"priority": "LOW|MEDIUM|HIGH", "tags": [str]}, "confidence": 0.0}')
 
+# Only asked for in the `detail` mode — the examples are the point of that mode.
+SECTIONS_HINT = ('In that JSON also include '
+                 '"sections": [{"heading": str, "points": [str], "examples": [str]}].')
+
 CATEGORY_INSTRUCTION = (
     "Also give a short `title` (the human name of the thing — a book/article/video/product "
     "title, not a sentence) and classify it into exactly ONE `category`:\n"
@@ -42,15 +46,47 @@ CATEGORY_INSTRUCTION = (
     "- Other: anything that fits none of the above")
 
 
-def _action_instruction():
-    return (
-        f"Also decide what the user most likely wants done with this (the 'action'):\n"
+def _action_instruction(mode=None):
+    lang = (
         f"- `detected_language`: the main language of the content.\n"
         f"- `translation`: a faithful {config.TRANSLATE_TO} translation of the caption/transcript/"
         f"key on-screen text — but ONLY if the content is NOT already in {config.TRANSLATE_TO}; "
-        f"otherwise \"\".\n"
+        f"otherwise \"\".")
+    if mode:                            # the user already chose — nothing for the model to decide
+        return f"Also report the language:\n{lang}\n- `suggested_action`: \"{mode}\"."
+    return (
+        f"Also decide what the user most likely wants done with this (the 'action'):\n{lang}\n"
         f"- `suggested_action`: \"translate\" if the content is not in {config.TRANSLATE_TO}; "
         f"else \"list\" if it enumerates discrete items; else \"note\".")
+
+
+# What the user picked on the chooser. Each mode gets its own focus; `detail` also widens the schema.
+MODE_INSTRUCTION = {
+    "note": ("THE USER ASKED FOR A SUMMARY: make `summary` and `key_points` the substance — a "
+             "clear overview of what is said and the points worth remembering."),
+    "list": ("THE USER ASKED FOR THE LIST: completeness of `list_items` is the priority — every "
+             "item named, in order, each with its note. Keep `summary` to one or two sentences."),
+    "detail": (
+        "THE USER ASKED FOR DETAILED NOTES WITH EXAMPLES. Fill `sections`: split the content into "
+        "its topics, in the order they are discussed, each with a short `heading`.\n"
+        "- `points`: the claims, arguments, explanations or steps made under that topic, as full "
+        "sentences that make sense without the source.\n"
+        "- `examples`: EVERY concrete example, case, number, story, demo, comparison or quote the "
+        "speaker/author uses for that topic — one per element, with enough specifics (who, what, "
+        "how much, what happened) to stand on its own. NEVER replace an example with a "
+        "generality like \"gives several examples\"; write the example itself. [] only if the "
+        "topic truly has none.\n"
+        "Do not shorten or merge sections to save space. Keep `summary` to 2-3 sentences."),
+}
+
+
+def mode_of(rule):
+    """The user-chosen mode riding on a rule (pipeline.reprocess adds it), else None."""
+    try:
+        m = rule["mode"]
+    except (KeyError, IndexError):      # a plain rules row (sqlite3.Row raises IndexError)
+        return None
+    return m if m in MODE_INSTRUCTION else None
 
 LIST_INSTRUCTION = (
     "IMPORTANT: If the content recommends or enumerates discrete items — e.g. books, "
@@ -113,10 +149,13 @@ def _generate(parts, model, media_resolution=None, timeout=300, _retry=True):
 
 
 def _prompt(rule, url, extra=""):
+    mode = mode_of(rule)
+    focus = f"{MODE_INSTRUCTION[mode]}\n\n" if mode else ""
+    schema = SCHEMA_HINT + (" " + SECTIONS_HINT if mode == "detail" else "")
     return (f"{rule['action_template']}\n\n"
             f"CONTENT TYPE: {rule['content_type']}\nPURPOSE: {rule['purpose']}\n"
             f"SOURCE URL: {url}\n{extra}\n\n{LIST_INSTRUCTION}\n\n{RECIPE_INSTRUCTION}\n\n"
-            f"{CATEGORY_INSTRUCTION}\n\n{_action_instruction()}\n\n{SCHEMA_HINT}")
+            f"{CATEGORY_INSTRUCTION}\n\n{focus}{_action_instruction(mode)}\n\n{schema}")
 
 
 def translate(text, to=None):
@@ -191,6 +230,8 @@ def stub(rule, url, text):
         "summary": summary,
         "key_points": points,
         "list_items": [],
+        "sections": [{"heading": title, "points": points,
+                      "examples": [f"Example from {url}"]}] if mode_of(rule) == "detail" else [],
         "recipe": {"servings": "2", "time": "20 min",
                    "ingredients": ["1 cup flour", "2 eggs"],
                    "steps": ["Mix the ingredients.", "Cook until done."]} if is_recipe else {},

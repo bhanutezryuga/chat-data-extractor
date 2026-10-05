@@ -1,6 +1,6 @@
-"""Tests for the Telegram capture UX: failure replies with a reason + next step (#15), pending
-`new <link>` items being re-offered and listed (#17), the two-step /archivegone (#18), and the
-/start + /help text (#19).
+"""Tests for the Telegram capture UX: every link gets the mode chooser before it is processed,
+failure replies with a reason + next step (#15), pending items being re-offered and listed (#17),
+the two-step /archivegone (#18), and the /start + /help text (#19).
 
 Hermetic: temp DB, stub mode, Logseq off, allowlist pinned to the fake chat, no real Telegram /
 Gemini / network (telegram._call, pipeline.fetch and friends are monkeypatched). Run:
@@ -102,14 +102,23 @@ def _rate_limited(*a, **k):
     raise RuntimeError("429 RESOURCE_EXHAUSTED rate limit")
 
 
+def _item(url):
+    con = db.connect()
+    r = con.execute("SELECT id FROM items WHERE raw_url=?", (url,)).fetchone()
+    con.close()
+    return r["id"] if r else None
+
+
 _orig_stub = gemini.stub
+_tg_calls.clear()
+telegram.handle_update(_msg("https://example.com/other-article", 1))   # bare link -> chooser first
 gemini.stub = _rate_limited
 try:
     _tg_calls.clear()
-    telegram.handle_update(_msg("https://example.com/other-article", 1))
+    telegram.handle_update(_cb(f"new|{_item('https://example.com/other-article')}|note"))
 finally:
     gemini.stub = _orig_stub
-t = " | ".join(_texts())
+t = " | ".join(_texts("editMessageText"))
 check("rate-limited capture: reply includes the classify label", "Rate limited" in t, t)
 check("rate-limited capture: reply suggests /retry", "/retry" in t, t)
 check("rate-limited capture: reply is not the bare '→ FAILED' token", "→ FAILED" not in t, t)
@@ -186,6 +195,7 @@ check("`new <link>` on a pending link re-offers the chooser too",
 # a genuinely processed link still says Already saved
 _tg_calls.clear()
 telegram.handle_update(_msg("https://example.com/processed-one", 13))
+telegram.handle_update(_cb(f"new|{_item('https://example.com/processed-one')}|note"))
 _tg_calls.clear()
 telegram.handle_update(_msg("https://example.com/processed-one", 14))
 check("a processed duplicate still replies 'Already saved'",
@@ -213,6 +223,84 @@ check("/pending with nothing pending says so, with no buttons",
 _tg_calls.clear()
 telegram.handle_update(_msg("/start", 18))
 check("/start help mentions /pending", any("/pending" in x for x in _texts()), _texts())
+
+# =========================================================================
+# Mode chooser — every link waits for Summary / List / Detailed notes
+# =========================================================================
+print("\n=== mode chooser ===\n")
+
+import json  # noqa: E402
+
+
+def _kbd(p):
+    return [b["callback_data"] for row in json.loads(p.get("reply_markup") or "{}").get("inline_keyboard", [])
+            for b in row]
+
+
+def _action(iid):
+    con = db.connect()
+    r = con.execute("SELECT action FROM items WHERE id=?", (iid,)).fetchone()
+    con.close()
+    return r["action"]
+
+
+_tg_calls.clear()
+telegram.handle_update(_msg("https://example.com/talk-one", 20))
+m1 = _item("https://example.com/talk-one")
+check("a bare link is saved unprocessed (AWAITING_ACTION)", _status(m1) == "AWAITING_ACTION", _status(m1))
+check("...and gets exactly the three mode buttons",
+      len(_sent()) == 1 and _kbd(_sent()[0]) == [f"new|{m1}|note", f"new|{m1}|list", f"new|{m1}|detail"],
+      [_kbd(p) for p in _sent()])
+check("chooser callback data fits Telegram's 64-byte limit",
+      all(len(b.encode()) <= 64 for b in _kbd(_sent()[0])))
+
+_tg_calls.clear()
+telegram.handle_update(_cb(f"new|{m1}|detail"))
+edits = _sent("editMessageText")
+t = edits[-1]["text"] if edits else ""
+check("tapping Detailed notes processes it in detail mode", _status(m1) == "ACTIONABLE" and _action(m1) == "detail",
+      (_status(m1), _action(m1)))
+check("...the chooser message becomes the notes, with the examples", "DETAILED NOTES" in t and "e.g. " in t, t)
+check("...and offers the three modes to switch between",
+      edits and _kbd(edits[-1]) == [f"act|{m1}|note", f"act|{m1}|list", f"act|{m1}|detail"],
+      _kbd(edits[-1]) if edits else None)
+
+_tg_calls.clear()
+telegram.handle_update(_cb(f"act|{m1}|note"))           # switching away is instant, sections are kept
+check("switching to Summary is instant", _action(m1) == "note"
+      and "SUMMARY" in _texts("editMessageText")[-1], _texts("editMessageText"))
+telegram.handle_update(_cb(f"act|{m1}|detail"))
+check("...and back to Detailed notes", _action(m1) == "detail")
+
+_tg_calls.clear()
+telegram.handle_update(_msg("https://example.com/talk-two", 21))
+m2 = _item("https://example.com/talk-two")
+telegram.handle_update(_cb(f"new|{m2}|note"))
+_tg_calls.clear()
+telegram.handle_update(_cb(f"act|{m2}|detail"))         # processed as a summary -> re-read for detail
+t = _texts("editMessageText")[-1] if _texts("editMessageText") else ""
+check("Detailed notes on a summary-only item re-reads the link", _action(m2) == "detail" and "e.g. " in t, t)
+
+_tg_calls.clear()
+telegram.handle_update(_msg("two links https://example.com/multi-a and https://example.com/multi-b", 22))
+check("several links in one message get a chooser each",
+      _chooser_items(_sent()) == {_item("https://example.com/multi-a"), _item("https://example.com/multi-b")})
+
+# a PDF upload has no link to hold for later — it is still processed straight away
+_orig_dl = telegram._download_file
+telegram._download_file = lambda file_id, limit=0: b"%PDF-1.4 fake"
+try:
+    _tg_calls.clear()
+    telegram.handle_update({"message": {"chat": {"id": CHAT}, "message_id": 23, "caption": "",
+                                        "document": {"file_id": "f1", "file_name": "paper.pdf",
+                                                     "mime_type": "application/pdf"}}})
+finally:
+    telegram._download_file = _orig_dl
+con = db.connect()
+pdf = con.execute("SELECT status FROM items WHERE source_msg_id='23'").fetchone()
+con.close()
+check("a PDF upload is processed immediately (no chooser)",
+      pdf and pdf["status"] != "AWAITING_ACTION" and not _chooser_items(_sent()), (dict(pdf) if pdf else None))
 
 # =========================================================================
 # #18 — /archivegone previews first; only the confirm button archives

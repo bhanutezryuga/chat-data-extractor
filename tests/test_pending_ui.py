@@ -94,6 +94,12 @@ check("dropped link is archived, not deleted", _status(b) == "ARCHIVED", _status
 st, data = _req("GET", "/api/pending")
 check("dropped link leaves the pending list", b not in [it["id"] for it in data.get("items", [])])
 
+c = pipeline.create_pending(raw_url="https://example.com/c", raw_text="https://example.com/c",
+                            source_chat_id="1", source_msg_id="n3")["id"]
+st, data = _req("POST", "/api/pending", {"id": c, "action": "detail"})
+check("the detail mode is accepted", st == 202 and _wait_until(lambda: (c, "detail") in _processed),
+      (st, _processed))
+
 st, _ = _req("POST", "/api/pending", {"id": a, "action": "explode"})
 check("unknown action -> 400", st == 400, st)
 st, _ = _req("POST", "/api/pending", {"id": "nope", "action": "note"})
@@ -103,6 +109,8 @@ check("an item that is no longer pending -> 404", st == 404, st)
 
 html = (config.ROOT / "app" / "static" / "minimal.html").read_text(encoding="utf-8")
 check("dashboard loads /api/pending", "/api/pending" in html)
+check("dashboard pending panel offers the three modes",
+      all(f'data-act="{m}"' in html for m in ("note", "list", "detail")))
 
 _srv.shutdown()
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")

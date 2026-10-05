@@ -120,12 +120,12 @@ def _write_result(con, item_id, rule, meta, data, kind):
     if data.get("_usage"):
         usage.record(con, item_id, data.get("_model"), kind, data["_usage"])
     con.execute(
-        "INSERT INTO extractions (id,item_id,summary,transcript,key_points,list_items,translation,detected_language,recipe,raw_metadata,source,model,created_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO extractions (id,item_id,summary,transcript,key_points,list_items,translation,detected_language,recipe,sections,raw_metadata,source,model,created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (db.new_id(), item_id, data.get("summary"), data.get("transcript"),
          json.dumps(data.get("key_points", [])), json.dumps(data.get("list_items", [])),
          data.get("translation"), data.get("detected_language"),
-         json.dumps(data.get("recipe") or {}),
+         json.dumps(data.get("recipe") or {}), json.dumps(data.get("sections") or []),
          json.dumps(meta), f"gemini_{kind}" if config.USE_GEMINI else "stub",
          data.get("_model"), db.now()))
     t = data.get("task", {}) or {}
@@ -137,7 +137,9 @@ def _write_result(con, item_id, rule, meta, data, kind):
          (t.get("priority") or "MEDIUM").upper(), "TODO",
          json.dumps(t.get("tags", [])), db.now(), db.now()))
     _set_status(con, item_id, "ACTIONABLE", rule, data.get("confidence", 0.5))
-    con.execute("UPDATE items SET action=? WHERE id=?", (_decide_action(data), item_id))
+    # a mode the user picked on the chooser wins over the smart default
+    con.execute("UPDATE items SET action=? WHERE id=?",
+                (gemini.mode_of(rule) or _decide_action(data), item_id))
     dup_of = _write_knowledge(con, item_id, data)
     db.log(con, item_id, "generate_task", "ok", t.get("title", ""))
     if dup_of:
@@ -229,7 +231,9 @@ def _decide_action(data):
 
 def set_action(item_id, action):
     """Override the active action. List/Note are instant (re-emphasis); Translate
-    computes a translation on demand if one wasn't pre-generated."""
+    computes a translation on demand if one wasn't pre-generated. Detail needs its own
+    extraction: if the item has no sections yet this changes nothing and returns
+    {"needs_reprocess": True} — the caller re-runs it via process_pending(item_id, "detail")."""
     action = (action or "").lower()
     if action not in config.ACTIONS:
         return {"error": "unknown action"}
@@ -238,6 +242,15 @@ def set_action(item_id, action):
     if not it:
         con.close()
         return {"error": "not found"}
+    if action == "detail":
+        ex = con.execute("SELECT sections FROM extractions WHERE item_id=? "
+                         "ORDER BY created_at DESC LIMIT 1", (item_id,)).fetchone()
+        if not (ex and json.loads(ex["sections"] or "[]")):
+            has_url = con.execute("SELECT raw_url FROM items WHERE id=?", (item_id,)).fetchone()["raw_url"]
+            con.close()
+            if not has_url:             # a PDF upload or typed note can't be fetched again
+                return {"error": "Detailed notes need a link I can re-read"}
+            return {"id": item_id, "needs_reprocess": True}
     if action == "translate" and config.USE_GEMINI:
         ex = con.execute("SELECT id, translation, transcript, summary FROM extractions "
                          "WHERE item_id=? ORDER BY created_at DESC LIMIT 1", (item_id,)).fetchone()
@@ -545,15 +558,25 @@ def create_pending(raw_url=None, raw_text=None, source_chat_id=None, source_msg_
 
 
 def process_pending(item_id, action):
-    """Process a pending item, then force the chosen action ('auto' keeps the smart default)."""
-    res = reprocess(item_id)
-    if action and action.lower() != "auto" and (res or {}).get("status") == "ACTIONABLE":
-        set_action(item_id, action.lower())
+    """Process a pending item in the chosen mode. note/list/detail shape the extraction itself
+    (the mode is saved first, so a failed run keeps it for /retry); 'translate' is applied after;
+    'auto' keeps the smart default."""
+    action = (action or "").lower()
+    if action in gemini.MODE_INSTRUCTION:
+        con = db.connect()
+        con.execute("UPDATE items SET action=? WHERE id=?", (action, item_id))
+        con.commit()
+        con.close()
+        return reprocess(item_id)
+    res = reprocess(item_id, keep_mode=False)
+    if action == "translate" and (res or {}).get("status") == "ACTIONABLE":
+        set_action(item_id, action)
     return res
 
 
-def reprocess(item_id):
-    """Re-run an existing item (e.g. a NEEDS_REVIEW reel once V2/yt-dlp is available)."""
+def reprocess(item_id, keep_mode=True):
+    """Re-run an existing item (e.g. a NEEDS_REVIEW reel once V2/yt-dlp is available). The item's
+    mode (items.action) is re-applied to the extraction unless keep_mode is False."""
     con = db.connect()
     it = con.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
     if not it:
@@ -570,6 +593,8 @@ def reprocess(item_id):
         _set_status(con, item_id, "NEEDS_REVIEW")
         con.commit(); con.close()
         return {"id": item_id, "status": "NEEDS_REVIEW"}
+    if keep_mode and it["action"] in gemini.MODE_INSTRUCTION:
+        rule = dict(rule, mode=it["action"])      # rides on the rule down to gemini._prompt
     text, pdf_bytes, meta = fetch(url, rule["extraction_strategy"])
     db.log(con, item_id, "fetch", "ok" if meta.get("fetched") else "warn", f"chars={len(text)}")
     res = _process_classified(con, item_id, rule, url, text, pdf_bytes)
