@@ -213,7 +213,7 @@ document.addEventListener('click', async e => {
   refresh();
 });
 
-// Links saved with `new <link>` that never got an action chosen (#17): process or drop them here.
+// Links sent to the bot that never got a mode chosen (#17): process or drop them here.
 function renderPending(p){
   const sec = document.getElementById('pending-sec');
   if (!p || !p.count) { sec.hidden = true; return; }
@@ -223,10 +223,9 @@ function renderPending(p){
     <div class="item">
       ${it.raw_url?`<a href="${esc(safeHref(it.raw_url))}" target="_blank" rel="noopener">${esc(it.raw_url)}</a>`:''}
       <div class="due-actions" data-kind="pending">
-        <button data-id="${esc(it.id)}" data-act="note">📝 Note</button>
+        <button data-id="${esc(it.id)}" data-act="note">📝 Summary</button>
         <button data-id="${esc(it.id)}" data-act="list">📋 List</button>
-        <button data-id="${esc(it.id)}" data-act="translate">🌐 Translate</button>
-        <button data-id="${esc(it.id)}" data-act="auto">✨ Auto</button>
+        <button data-id="${esc(it.id)}" data-act="detail">🔎 Detailed notes</button>
         <button data-id="${esc(it.id)}" data-act="drop">🗑 Drop</button>
       </div>
     </div>`).join('');

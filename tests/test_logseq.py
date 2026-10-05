@@ -201,6 +201,24 @@ check("_has_content: 'no content' refusal -> False",
                                "key_points": '["Unable to extract key points as no content was provided."]'}))
 check("_has_content: empty -> False", not logseq._has_content({}))
 check("_has_content: list_items make it exportable", logseq._has_content({"summary": "", "list_items": '[{"name":"x"}]'}))
+
+# ---------- detail mode: sections (points + examples) render as ## Details ----------
+_secs = ('[{"heading":"Pricing","points":["Anchor high first."],'
+         '"examples":["A $99 plan made the $49 plan sell 3x more."]},'
+         '{"heading":"Empty","points":[],"examples":[]}, "junk"]')
+dmd = logseq.render_page(study_item, dict(ex, sections=_secs), [], {})
+check("detail: ## Details block with the heading and its point",
+      "- ## Details" in dmd and "\t- **Pricing**" in dmd and "\t\t- Anchor high first." in dmd, dmd)
+check("detail: examples are nested under an Examples bullet",
+      "\t\t- Examples\n\t\t\t- A $99 plan made the $49 plan sell 3x more." in dmd, dmd)
+check("detail: empty / malformed sections are dropped", "Empty" not in dmd and "junk" not in dmd, dmd)
+check("detail: Summary is kept and the user's ## Notes area still comes last",
+      "## Summary" in dmd and dmd.rstrip().endswith("- ## Notes\n\t-"), dmd)
+dlist = logseq.render_page(study_item, dict(ex, sections=_secs), coll, {})
+check("detail: shown alongside a collection list", "- ## Details" in dlist and "## [[To-Read]]" in dlist, dlist)
+check("no sections -> no ## Details block", "## Details" not in md)
+check("_has_content: sections alone make it exportable", logseq._has_content({"summary": "", "sections": _secs}))
+check("_has_content: empty sections are ignored", not logseq._has_content({"summary": "", "sections": "[]"}))
 _junk = db.new_id()
 con = db.connect()
 con.execute("INSERT INTO items (id,user_id,raw_url,status,category,title,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",

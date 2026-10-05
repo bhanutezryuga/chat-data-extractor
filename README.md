@@ -8,19 +8,21 @@ Useful reels, shorts, videos, PDFs, and articles get lost in chat scrollback and
 ## How it works (one breath)
 Telegram bot → classify via rules → fetch description (PDFs go to Gemini natively) → Gemini extracts a summary/list/recipe + an actionable task → SQLite → a Logseq page. Reels/shorts/videos with **no usable description** are analyzed as **video** by Gemini multimodal (YouTube by URL; Instagram/TikTok via optional yt-dlp).
 
-## Actions / intent ("what do I want to do with this?")
-Every item gets a **smart-default action** Gemini picks from the content, and you can override it — one action per item:
-- **📝 Note** — a summary to look back on (the default).
-- **📋 List** — surface the enumerated items (books/products/links).
-- **🌐 Translate** — render the content in your language (`TRANSLATE_TO`, default English). Auto-chosen when the content isn't already in that language.
+## Modes ("what do I want from this?")
+You decide what each link becomes — the bot asks before it processes anything. Send a link and it replies with **[📝 Summary] [📋 List] [🔎 Detailed notes]**; tap one and *then* it is processed in that mode:
+- **📝 Summary** — a short overview plus the key points.
+- **📋 List** — every item named or recommended (books/products/tools/steps), each with its note and link.
+- **🔎 Detailed notes** — topic-by-topic notes that keep the concrete examples, numbers and stories. Best for discussion videos, talks and long articles. On the Logseq page these land under `## Details`.
 
-Note↔List switching is **instant** (same extraction, different emphasis); Translate runs a translation if one wasn't already made. New actions (Shop/Organize/Share) plug in the same way.
+Your choice is sent to Gemini as part of the prompt, so the mode shapes what is extracted, not just what is shown. The same three buttons sit under every result: Summary↔List switching is **instant**; switching to Detailed notes re-reads the link once (one more Gemini call) if it wasn't processed that way.
 
-**Two ways to set the action, both in Telegram:**
-- **Choose first:** send `new <link>` → the bot shows **[📝 Note] [📋 List] [🌐 Translate] [✨ Auto]**; tap one and *then* it processes (Auto = let it decide).
-- **Auto + override:** send a bare link → it auto-processes; switch later via the buttons under the result message.
+- A link you never tap stays pending — `/pending` (or the dashboard) offers it again.
+- `new <link>` still works and does the same thing as a bare link.
+- A **PDF upload** is processed straight away, with a smart default (Gemini picks summary or list).
+- Content not in your language (`TRANSLATE_TO`, default English) also gets a translation on its page.
+- Bulk imports (`python -m app.sideload`) are unchanged: no chooser, smart default.
 
-**Each result shows only its action's content** — Translate shows just the translation, List just the list, Note the summary/key-points.
+Detailed notes cost more output tokens than a summary. For videos the bulk of the cost is Gemini watching the video, which is the same in every mode.
 
 ## Recipe capture
 If Gemini detects the content **is** a recipe, it's documented in full on the Logseq page — every ingredient (with quantity) under `## Ingredients`, every step in order under `## Steps` — instead of a generic summary. No button needed; it's automatic.

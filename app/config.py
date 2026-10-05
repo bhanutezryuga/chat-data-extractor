@@ -45,7 +45,7 @@ COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()  # chr
 
 # --- Actions / intent ("what do I want to do with this link?") ---
 TRANSLATE_TO = os.environ.get("TRANSLATE_TO", "English").strip()           # default language for the Translate action
-ACTIONS      = ("note", "list", "translate")                              # v1 actions (shop/organize/share later)
+ACTIONS      = ("note", "list", "detail", "translate")                              # v1 actions (shop/organize/share later)
 
 # --- PKM: spaced-repetition "revisit" (turn saves into a knowledge base that resurfaces itself) ---
 # The category taxonomy seeded into the DB (db.init). Kept here for the Gemini prompt + validation.

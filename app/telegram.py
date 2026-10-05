@@ -15,7 +15,9 @@ from . import config, db, failures, logseq, pipeline, revisit, sideload, web
 
 API = "https://api.telegram.org/bot{token}/{method}"
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
-_ICON = {"note": "📝", "list": "📋", "translate": "🌐"}
+_ICON = {"note": "📝", "list": "📋", "detail": "🔎", "translate": "🌐"}
+_LABEL = {"note": "Summary", "list": "List", "detail": "Detailed notes", "translate": "Translate"}
+_MODES = ("note", "list", "detail")       # what the chooser offers
 
 
 def _allowed(chat_id):
@@ -89,18 +91,17 @@ def edit_message_text(chat_id, message_id, text, kbd=None):
 
 
 def _action_kbd(item_id, active):
-    # Post-result override offers Note/List only; Translate is chosen up front via `new`.
-    row = [{"text": ("• " if a == active else "") + _ICON[a] + " " + a.title(),
-            "callback_data": f"act|{item_id}|{a}"} for a in ("note", "list")]
+    # Post-result override: the same three modes as the chooser (• marks the active one).
+    row = [{"text": ("• " if a == active else "") + _ICON[a] + " " + _LABEL[a],
+            "callback_data": f"act|{item_id}|{a}"} for a in _MODES]
     return {"inline_keyboard": [row]}
 
 
 def _new_kbd(item_id):
-    """Pre-process chooser for the `new <link>` command (includes Auto)."""
-    opts = [("note", "📝 Note"), ("list", "📋 List"),
-            ("translate", "🌐 Translate"), ("auto", "✨ Auto")]
-    b = [{"text": lbl, "callback_data": f"new|{item_id}|{a}"} for a, lbl in opts]
-    return {"inline_keyboard": [b[:2], b[2:]]}
+    """Pre-process chooser shown for every link: pick ONE mode, then it's processed that way."""
+    row = [{"text": _ICON[a] + " " + _LABEL[a], "callback_data": f"new|{item_id}|{a}"}
+           for a in _MODES]
+    return {"inline_keyboard": [row]}
 
 
 def _revisit_kbd(item_id):
@@ -192,10 +193,13 @@ def _format_result(item_id):
         return None, None
     action = it["action"] or "note"
     # Translate replies are just the translation — no operation header.
-    head = "" if action == "translate" else f"{_ICON.get(action, '•')} {action.upper()} · {it['content_type'] or '?'}\n\n"
+    head = "" if action == "translate" else (f"{_ICON.get(action, '•')} {_LABEL.get(action, action).upper()}"
+                                             f" · {it['content_type'] or '?'}\n\n")
     body = ""
     if ex:
-        if action == "list":
+        if action == "detail":
+            body = _detail_text(ex) or ex["summary"] or ""
+        elif action == "list":
             items = json.loads(ex["list_items"] or "[]")
             if items:
                 lines = []
@@ -211,8 +215,30 @@ def _format_result(item_id):
             body = (ex["translation"] or "").strip() or (ex["summary"] or "(no translation available)")
         else:
             body = ex["summary"] or ""
-    text = head + (body[:3500] if body else "(processing…)")
+    if len(body) > 3500:
+        body = body[:3500].rstrip() + "\n…" + ("\nFull notes are on the Logseq page."
+                                              if action == "detail" and logseq.active() else "")
+    text = head + (body or "(processing…)")
     return text, _action_kbd(item_id, action)
+
+
+def _detail_text(ex):
+    """The `detail` mode's sections as plain text: heading, points, then the examples."""
+    try:
+        sections = json.loads(ex["sections"] or "[]")
+    except ValueError:
+        return ""
+    out = []
+    for s in sections:
+        if not isinstance(s, dict):
+            continue
+        lines = [f"▸ {s.get('heading') or 'Notes'}"]
+        lines += [f"• {p}" for p in (s.get("points") or [])]
+        lines += [f"   e.g. {e}" for e in (s.get("examples") or [])]
+        if len(lines) > 1:
+            out.append("\n".join(lines))
+    summary = (ex["summary"] or "").strip()
+    return "\n\n".join(([summary] if summary and out else []) + out)
 
 
 def _handle_callback(cb):
@@ -243,7 +269,8 @@ def _handle_callback(cb):
         return
 
     if kind == "new":                                   # pre-process choice: process now with this action
-        _call("answerCallbackQuery", callback_query_id=cb_id, text=f"Processing as {action}…")
+        _call("answerCallbackQuery", callback_query_id=cb_id,
+              text=f"Processing as {_LABEL.get(action, action).lower()}…")
         try:
             res = pipeline.process_pending(item_id, action)
         except Exception as e:
@@ -263,8 +290,24 @@ def _handle_callback(cb):
         return
 
     res = pipeline.set_action(item_id, action)          # post-process override
+    if res.get("needs_reprocess"):                      # no detailed notes yet: extract them now
+        _call("answerCallbackQuery", callback_query_id=cb_id,
+              text=f"Re-reading it for {_LABEL.get(action, action).lower()}…")
+        try:
+            res = pipeline.process_pending(item_id, action)
+        except Exception as e:
+            if chat_id and mid:
+                edit_message_text(chat_id, mid, f"⚠️ Failed: {e}\nSend /retry to try again.")
+            return
+        if chat_id and mid:
+            if (res or {}).get("status") in ("FAILED", "NEEDS_REVIEW"):
+                edit_message_text(chat_id, mid, _ack(item_id))
+            else:
+                text, kbd = _format_result(item_id)
+                edit_message_text(chat_id, mid, text or "done", kbd)
+        return
     _call("answerCallbackQuery", callback_query_id=cb_id,
-          text=(res.get("error") or f"Switched to {action}")[:180])
+          text=(res.get("error") or f"Switched to {_LABEL.get(action, action).lower()}")[:180])
     if not res.get("error") and chat_id and mid:
         text, kbd = _format_result(item_id)
         if text:
@@ -301,7 +344,7 @@ def _ack(item_id):
 
 
 def _pending_url(item_id):
-    """The raw_url of an item still waiting for a `new <link>` choice, else None."""
+    """The raw_url of an item still waiting for a mode to be chosen, else None."""
     con = db.connect()
     r = con.execute("SELECT raw_url FROM items WHERE id=? AND status='AWAITING_ACTION'",
                     (item_id,)).fetchone()
@@ -310,8 +353,8 @@ def _pending_url(item_id):
 
 
 def _reoffer(chat_id, item_id, url):
-    """Re-show the `new <link>` chooser for an item nobody picked an action for yet."""
-    send_message(chat_id, f"⏳ You haven't picked an action for this yet:\n{url}", _new_kbd(item_id))
+    """Re-show the chooser for an item nobody picked a mode for yet."""
+    send_message(chat_id, f"⏳ You haven't picked what you want from this yet:\n{url}", _new_kbd(item_id))
 
 
 def _dup_reply(chat_id, item_id):
@@ -321,6 +364,22 @@ def _dup_reply(chat_id, item_id):
         _reoffer(chat_id, item_id, url)
     else:
         send_message(chat_id, "🔁 Already saved this — skipping.")
+
+
+def _offer(chat_id, text, msg_id, prefix=""):
+    """Save every link in `text` unprocessed and ask which mode to process it in. Returns the
+    number of links found."""
+    urls = pipeline.extract_urls(text)
+    for i, url in enumerate(urls):
+        r = pipeline.create_pending(raw_url=url, raw_text=text,
+                                    source_chat_id=str(chat_id), source_msg_id=f"{prefix}{msg_id}:{i}")
+        if r and r.get("status") == "AWAITING_ACTION":
+            send_message(chat_id, f"🆕 What do you want from this?\n{url}", _new_kbd(r["id"]))
+        elif r and r.get("status") == "DUPLICATE":
+            _dup_reply(chat_id, r["id"])
+        else:
+            send_message(chat_id, "🔁 Already saved this — skipping.")
+    return len(urls)
 
 
 _archive_previews = {}    # token -> item ids shown in an /archivegone preview (in-memory; lost on restart)
@@ -376,10 +435,11 @@ def _help_text(chat_id):
     else:
         dash = f"Dashboard: {url}"
     lines = [
-        "Send a link (or a PDF) and I'll process it automatically.",
+        "Send a link and I'll ask what you want from it: Summary, List, or Detailed notes "
+        "(with the examples). A PDF is processed straight away.",
         "",
-        "new <link> - choose the action first (Note / List / Translate / Auto)",
-        "/pending - links from 'new' still waiting for you to pick an action",
+        "new <link> - same as sending the link on its own",
+        "/pending - links still waiting for you to pick one",
         "/note <text> - save a personal note, no link needed",
         "/review - what's due to revisit this week",
         "/retry - reprocess stuck or failed items",
@@ -401,15 +461,15 @@ _PENDING_MAX = 10
 
 
 def _send_pending(chat_id):
-    """/pending — re-send the chooser for every `new <link>` item still awaiting a choice."""
+    """/pending — re-send the chooser for every link still awaiting a choice."""
     con = db.connect()
     rows = con.execute("SELECT id, raw_url FROM items WHERE user_id=? AND status='AWAITING_ACTION' "
                        "ORDER BY created_at", (config.USER_ID,)).fetchall()
     con.close()
     if not rows:
-        send_message(chat_id, "✅ Nothing pending — every saved link has an action.")
+        send_message(chat_id, "✅ Nothing pending — every saved link has been processed.")
         return
-    send_message(chat_id, f"⏳ {len(rows)} link(s) waiting for you to pick an action"
+    send_message(chat_id, f"⏳ {len(rows)} link(s) waiting for you to pick what you want"
                  + (f" — showing the oldest {_PENDING_MAX}" if len(rows) > _PENDING_MAX else "") + ":")
     for r in rows[:_PENDING_MAX]:
         _reoffer(chat_id, r["id"], r["raw_url"] or "(no link)")
@@ -488,21 +548,10 @@ def handle_update(u):
                          + ("\nWritten to your Logseq graph." if logseq.active() else ""))
         return
 
-    # `new <link>` (or `/new`) — choose the action BEFORE processing
+    # `new <link>` (or `/new`) — kept as an alias; a bare link gets the same chooser below
     if low.startswith("new ") or low.startswith("/new"):
-        urls = pipeline.extract_urls(text)
-        if not urls:
-            send_message(chat_id, "Send a link to choose an action for, e.g.  new https://…")
-            return
-        for i, url in enumerate(urls):
-            r = pipeline.create_pending(raw_url=url, raw_text=text,
-                                        source_chat_id=str(chat_id), source_msg_id=f"new{msg_id}:{i}")
-            if r and r.get("status") == "AWAITING_ACTION":
-                send_message(chat_id, f"🆕 What should I do with this?\n{url}", _new_kbd(r["id"]))
-            elif r and r.get("status") == "DUPLICATE":
-                _dup_reply(chat_id, r["id"])
-            else:
-                send_message(chat_id, "🔁 Already saved this — skipping.")
+        if not _offer(chat_id, text, msg_id, prefix="new"):
+            send_message(chat_id, "Send a link to choose a mode for, e.g.  new https://…")
         return
 
     results = []
@@ -521,12 +570,8 @@ def handle_update(u):
         except Exception as e:
             send_message(chat_id, f"⚠️ Could not read the PDF: {e}")
 
-    for i, url in enumerate(pipeline.extract_urls(text)):
-        results.append(pipeline.ingest(
-            raw_url=url, raw_text=text,
-            source_chat_id=str(chat_id), source_msg_id=f"{msg_id}:{i}"))
-
-    sent = False
+    # Every link waits for a mode (Summary / List / Detailed notes) before anything is processed.
+    sent = bool(_offer(chat_id, text, msg_id))
     for r in results:
         if not r:
             continue

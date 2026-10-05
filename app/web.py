@@ -263,10 +263,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, res)
             return self._send(200, res)
 
-        if path == "/api/pending":     # {id, action: note|list|translate|auto|drop} for an AWAITING_ACTION link
+        if path == "/api/pending":     # {id, action: note|list|detail|translate|auto|drop} for an AWAITING_ACTION link
             item_id, action = body.get("id"), body.get("action")
-            if action not in ("note", "list", "translate", "auto", "drop"):
-                return self._send(400, {"error": "action must be note, list, translate, auto or drop"})
+            if action not in ("note", "list", "detail", "translate", "auto", "drop"):
+                return self._send(400, {"error": "action must be note, list, detail, translate, auto or drop"})
             con = db.connect()
             row = con.execute("SELECT id FROM items WHERE id=? AND status='AWAITING_ACTION'",
                               (item_id,)).fetchone()
