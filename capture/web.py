@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -50,6 +50,16 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/healthz")
     async def healthz():
         return {"ok": True}
+
+    @app.get("/manifest.webmanifest")
+    async def manifest():
+        return FileResponse(HERE / "static" / "manifest.webmanifest",
+                            media_type="application/manifest+json")
+
+    @app.get("/sw.js")
+    async def service_worker():
+        return FileResponse(HERE / "static" / "sw.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-cache"})
 
     @app.get("/")
     async def home(request: Request, saved: str | None = None, error: str | None = None):
