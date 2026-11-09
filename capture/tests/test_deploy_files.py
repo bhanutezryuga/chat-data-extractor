@@ -46,3 +46,10 @@ def test_box_scripts_are_executable_in_git():
 def test_setup_creates_data_dir_for_uid_1000():
     text = Path("deploy/box/setup.sh").read_text()
     assert "install -d -o 1000 -g 1000" in text and "data-capture" in text
+
+
+def test_docs_cover_phone_install_and_update():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    guide = Path("deploy/box/BOX_SETUP.html").read_text(encoding="utf-8")
+    assert "deploy/box/BOX_SETUP.html" in readme
+    assert "Add to Home screen" in guide and "update.sh" in guide

@@ -67,7 +67,27 @@ CAPTURE_ALLOWED_LOGINS=you@example.com</code></pre>
     </ul>
   </div>
 
-  <h2>Updating later</h2>
+  <h2>Install on your phone</h2>
+  <ol>
+    <li>Open <code>https://capture.&lt;tailnet&gt;.ts.net</code> in Chrome on Android.</li>
+    <li>Tap <strong>&#8942;</strong> &rarr; <strong>Add to Home screen</strong> &rarr; <strong>Install</strong>.</li>
+    <li>"Capture" now appears in the share sheet. In Instagram, tap Share; if Capture is not in the first row, tap <strong>More</strong> (or <strong>&#8943;</strong>).</li>
+    <li>Keep Tailscale set to "always on" so shares reach the box.</li>
+  </ol>
+
+  <h2>Phone check</h2>
+  <div class="box">
+    <ul style="list-style:none;padding-left:0">
+      <li>&#9744; 1. Install the app from Chrome. "Capture" appears in Instagram &rarr; Share &rarr; More.</li>
+      <li>&#9744; 2. Share a reel. "Saved &#10003;" shows and closes. Within a minute the item has a title on the Home list.</li>
+      <li>&#9744; 3. Share the same reel again. There is still one item.</li>
+      <li>&#9744; 4. Turn Tailscale off and share a different reel. You see "Saved on your phone&hellip;".</li>
+      <li>&#9744; 5. Turn Tailscale on and open the app. The item appears and "shares waiting" disappears.</li>
+      <li>&#9744; 6. Paste a link from the laptop browser. It appears with the "Saved &#10003;" banner.</li>
+    </ul>
+  </div>
+
+  <h2>Updating</h2>
 <pre><code>cd /srv/chat-data-extractor &amp;&amp; deploy/box/update.sh</code></pre>
 
   <h2>Troubleshooting</h2>
