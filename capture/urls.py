@@ -1,5 +1,6 @@
 """Find a link in shared text and reduce it to a form that dedupes."""
 import re
+import unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 _URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
@@ -12,7 +13,18 @@ def extract_url(text: str) -> str | None:
     m = _URL_RE.search(text)
     if not m:
         return None
-    url = m.group(0).rstrip(_TRAILING)
+    url = m.group(0)
+    while url:
+        last = url[-1]
+        if last in ")]":
+            opener = "(" if last == ")" else "["
+            if url.count(last) <= url.count(opener):
+                break
+        elif last in _TRAILING:
+            pass
+        elif not (ord(last) > 127 and unicodedata.category(last)[0] in "SP"):
+            break
+        url = url[:-1]
     return url or None
 
 

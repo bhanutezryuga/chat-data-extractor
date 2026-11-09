@@ -43,3 +43,18 @@ def test_extract_url_strips_wrapping_punctuation():
 
 def test_extract_url_none():
     assert extract_url("buy milk") is None
+
+
+def test_extract_url_keeps_balanced_parens():
+    u = "https://en.wikipedia.org/wiki/Foo_(bar)"
+    assert extract_url(u) == u
+    assert extract_url(f"see ({u}).") == u
+
+
+@pytest.mark.parametrize("tail", ["🔥", "。", "”"])
+def test_extract_url_strips_unicode_trailers(tail):
+    assert extract_url(f"https://x.com/a{tail}") == "https://x.com/a"
+
+
+def test_extract_url_stops_at_space_before_emoji():
+    assert extract_url("https://x.com/a 🔥") == "https://x.com/a"

@@ -112,3 +112,13 @@ def test_capture_makes_no_network_calls(store, monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", boom)
     r = capture(store, "https://www.instagram.com/reel/C9xYz12AbC/", now=NOW)
     assert store.get_item(r.item_id) is not None
+
+
+def test_job_insert_failure_leaves_no_orphan_item(store, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("job failed")
+
+    monkeypatch.setattr(store, "insert_job", boom)
+    with pytest.raises(RuntimeError):
+        capture(store, "https://example.com/x", now=NOW)
+    assert store.list_items() == []
