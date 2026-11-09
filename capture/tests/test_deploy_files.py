@@ -34,3 +34,15 @@ def test_setup_script_parses():
 
 def test_env_example_has_no_real_login():
     assert "CAPTURE_ALLOWED_LOGINS=you@example.com" in Path("capture/capture.env.example").read_text()
+
+
+def test_box_scripts_are_executable_in_git():
+    out = subprocess.run(["git", "ls-files", "-s", "deploy/box/setup.sh", "deploy/box/update.sh"],
+                         capture_output=True, text=True).stdout.splitlines()
+    assert len(out) == 2
+    assert all(line.startswith("100755 ") for line in out)
+
+
+def test_setup_creates_data_dir_for_uid_1000():
+    text = Path("deploy/box/setup.sh").read_text()
+    assert "install -d -o 1000 -g 1000" in text and "data-capture" in text

@@ -8,6 +8,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 TARGET_USER="${SUDO_USER:-}"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -22,6 +23,9 @@ fi
 if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
   usermod -aG docker "$TARGET_USER"
 fi
+
+# Data dir for the containers (they run as UID 1000; a bind mount ignores the image's chown)
+install -d -o 1000 -g 1000 "$REPO_DIR/data-capture"
 
 # Old laptop as a server: keep running with the lid closed, never sleep
 LOGIND=/etc/systemd/logind.conf
