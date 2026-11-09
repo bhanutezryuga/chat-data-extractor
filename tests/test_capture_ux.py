@@ -74,14 +74,14 @@ def _status(iid):
     return r["status"] if r else None
 
 
-def _seed(status, url, reason=None):
+def _seed(status, url, reason=None, step="fetch"):
     con = db.connect()
     iid = db.new_id()
     con.execute("INSERT INTO items (id,user_id,source_chat_id,source_msg_id,raw_url,status,content_type,"
                 "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (iid, config.USER_ID, str(CHAT), "seed" + iid[:8], url, status, "article", db.now(), db.now()))
     if reason:
-        db.log(con, iid, "fetch", "warn", reason)
+        db.log(con, iid, step, "warn", reason)
     con.commit()
     con.close()
     return iid
@@ -138,6 +138,13 @@ check("gone: says there's nothing to do (and no /retry nudge)",
 check("gone vs login_expired replies differ", t_login != t_gone)
 check("no_content: suggests /retry or /note", "/retry" in t_nc or "/note" in t_nc, t_nc)
 check("NEEDS_REVIEW reply isn't the bare '→ NEEDS_REVIEW' token", "→ NEEDS_REVIEW" not in t_nc, t_nc)
+
+# a 503 from Gemini (logged by the extract step) must not be blamed on the link
+t_busy = telegram._ack(_seed("FAILED", "https://www.instagram.com/reel/busy/",
+                             "HTTP Error 503: Service Unavailable", step="extract"))
+check("Gemini 503: reply says the AI service is busy, not the source",
+      "AI service" in t_busy and "Source temporarily" not in t_busy, t_busy)
+check("Gemini 503: reply suggests /retry", "/retry" in t_busy, t_busy)
 
 # `new <link>` chooser path that ends FAILED edits the chooser into the explained failure
 _tg_calls.clear()

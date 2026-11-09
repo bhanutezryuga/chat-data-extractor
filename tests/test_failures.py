@@ -79,6 +79,16 @@ cat, _ = failures.classify(
 check("Instagram 'rate-limit reached or login required' -> login_expired, not rate_limited",
       cat == "login_expired", cat)
 
+# a 503 logged by the extract step came from Gemini, not from the link — the label must say so
+cat, label = failures.classify("HTTP Error 503: Service Unavailable", "extract")
+check("503 at the extract step: still category 'unavailable'", cat == "unavailable", cat)
+check("503 at the extract step: label blames the AI service, not the source",
+      "AI service" in label and "Source" not in label, label)
+cat, label = failures.classify("HTTP Error 503: Service Unavailable", "fetch")
+check("503 at the fetch step: label still blames the source", label.startswith("Source"), label)
+cat, label = failures.classify("HTTP Error 404: Not Found", "extract")
+check("the step only changes the 503 label (404 at extract is still 'gone')", cat == "gone", cat)
+
 # fallbacks / edge cases
 cat, label = failures.classify("some totally unrecognized failure text")
 check("unrecognized reason falls back to category 'error'", cat == "error", cat)
@@ -162,6 +172,12 @@ try:
           bool(by_id.get(gone_id, {}).get("error_label")) and bool(by_id.get(rate_id, {}).get("error_label")))
     check("GET /api/failures: raw 'reason' text is still present (not replaced)",
           by_id.get(gone_id, {}).get("reason") == "HTTP Error 404: Not Found", by_id.get(gone_id))
+
+    busy_id = _seed_item("FAILED", "telegram-chat-1", "HTTP Error 503: Service Unavailable")
+    status, data = http_req("GET", "/api/failures")
+    busy = {it["id"]: it for it in data.get("items", [])}.get(busy_id, {})
+    check("GET /api/failures: a Gemini 503 (extract step) is labelled as the AI service being busy",
+          "AI service" in (busy.get("error_label") or ""), busy)
 
     status, data = http_req("GET", "/api/archived")
     check("GET /api/archived: 200, empty before anything is archived",

@@ -16,6 +16,17 @@
   .links a:hover { color: #e2e8f0; }
   .usage { margin-top: 10px; font-size: 12px; color: #94a3b8; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .usage b { color: #e2e8f0; }
+  .usage .src { cursor: help; }
+  .usage .src.google { color: #16a34a; }
+  .usage .src.settings { color: #ca8a04; }
+  .usage .warn { color: #f59e0b; }
+  .usage .legend { flex-basis: 100%; color: #64748b; font-size: 11px; }
+  .usage .src.unknown { color: #64748b; }
+  .usage .model { flex-basis: 100%; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .usage .model .st { border-radius: 999px; padding: 0 8px; font-size: 11px; border: 1px solid #334155; }
+  .usage .model .st.ok { color: #16a34a; border-color: #16a34a; }
+  .usage .model .st.standby { color: #94a3b8; }
+  .usage .model .st.out { color: #f59e0b; border-color: #f59e0b; }
   .bar { width: 140px; height: 6px; background: #334155; border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; }
   .bar > i { display: block; height: 100%; background: #16a34a; }
   main { max-width: 900px; margin: 0 auto; padding: 22px; }
@@ -264,16 +275,56 @@ async function doArchiveGone(){
   refresh();
 }
 
+// A limit with where it came from: ✓ = Google named it in a rate-limit reply, ~ = the value in
+// .env, ? = not set anywhere (the model is simply tried until Google says no).
+function limitHtml(l){
+  if(!l || l.value == null)
+    return `<span class="src unknown" title="No limit set for this model in .env (GEMINI_LIMITS) — it is tried until Google refuses">?</span>`;
+  const g = l.source === 'google';
+  const tip = g ? `Confirmed by Google on ${new Date(l.seen_at).toLocaleString()}`
+                : 'From your settings (.env) — Google has not confirmed this number';
+  return `${fmt(l.value)}<span class="src ${g?'google':'settings'}" title="${esc(tip)}">${g?'✓':'~'}</span>`;
+}
+
+function dur(sec){
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+  return h ? `${h}h ${m}m` : m ? `${m}m` : `${sec}s`;
+}
+
+// One line per model, in the order they are tried. The first usable one is the model in use.
+function modelHtml(m, i, active){
+  const left = m.blocked_until ? (new Date(m.blocked_until) - Date.now()) / 1000 : 0;
+  const st = m.status === 'ok'
+    ? (m.model === active ? ['ok', 'in use'] : ['standby', 'standby'])
+    : m.status === 'daily' ? ['out', `out of daily quota — back in ${dur(left)}`]
+    : m.status === 'overloaded' ? ['out', `overloaded — retry in ${dur(left)}`]
+    : ['out', `per-minute limit — free in ${dur(left)}`];
+  return `<span class="model"><span><b>${esc(m.model)}</b>${i ? ' (fallback)' : ''}</span>` +
+    `<span class="st ${st[0]}">${esc(st[1])}</span>` +
+    `<span>today <b>${fmt(m.today_requests)}</b>/${limitHtml(m.limits.rpd)} requests</span>` +
+    `<span>this minute <b>${fmt(m.minute_requests)}</b>/${limitHtml(m.limits.rpm)} requests, ` +
+    `<b>${fmt(m.minute_tokens)}</b>/${limitHtml(m.limits.tpm)} tokens</span></span>`;
+}
+
 function renderUsage(u){
   const el = document.getElementById('usage');
   if(!u || !u.enabled){ el.innerHTML = '<span>Gemini: <b>offline stub</b> (no API key)</span>'; return; }
   const pct = Math.min(100, Math.round(100 * u.today_tokens / (u.daily_token_budget||1)));
   const col = pct < 70 ? '#16a34a' : pct < 90 ? '#ca8a04' : '#dc2626';
+  const reset = new Date(u.reset_at);
+  const resetAt = reset.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
   el.innerHTML =
-    `<span><b>${esc(u.model)}</b></span>` +
-    `<span>tokens today <b>${fmt(u.today_tokens)}</b>/${fmt(u.daily_token_budget)} ` +
+    (u.models || []).map((m, i) => modelHtml(m, i, u.active_model)).join('') +
+    (u.active_model ? '' : `<span class="warn">⚠ No Gemini model is usable right now — new links will fail until one frees up.</span>`) +
+    `<span>daily quota resets in <b>${dur((reset - Date.now()) / 1000)}</b> (${resetAt})</span>` +
+    `<span title="Your own soft cap (DAILY_TOKEN_BUDGET) across all models — not a Google limit">token budget ` +
+    `<b>${fmt(u.today_tokens)}</b>/${fmt(u.daily_token_budget)} ` +
     `<span class="bar"><i style="width:${pct}%;background:${col}"></i></span></span>` +
-    `<span>requests <b>${fmt(u.today_requests)}</b>/${fmt(u.rpd_limit)}</span>`;
+    `<span class="legend">Requests are counted by this app (failed ones included), not read from Google. ` +
+    `<span class="src google">✓</span> limit confirmed by Google · ` +
+    `<span class="src settings">~</span> limit from your settings, unconfirmed · ` +
+    `<span class="src unknown">?</span> limit not set</span>`;
 }
 
 async function refresh(){

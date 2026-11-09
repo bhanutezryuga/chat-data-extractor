@@ -184,5 +184,27 @@ con.close()
 check("archive-gone: gone item is now ARCHIVED (not FAILED)", st1 == "ARCHIVED")
 check("archive-gone: nothing left to archive on re-run", still_gone == 0)
 
+# An item restored from the archive must be re-checked: its old "404" may come from a dead Instagram
+# session, not a deleted post. Until it is re-run, it is NOT gone for retry or for archive-gone.
+sideload.unarchive([g1])
+rcalls = []
+s = sideload.retry(execute=True, delay=0,
+                   reprocess_fn=lambda iid: rcalls.append(iid) or {"status": "ACTIONABLE"}, out=_silent)
+check("retry: a restored item is reprocessed, not skipped as gone", g1 in rcalls and s["skipped_gone"] == 0,
+      (rcalls, s["skipped_gone"]))
+check("archive-gone: a restored item is not offered for archiving again",
+      sideload.archive_gone(execute=False, out=_silent)["gone"] == 0)
+con = db.connect()                       # the re-run says 404 again (logged after the restore)
+con.execute("INSERT INTO processing_logs (id,item_id,step,status,detail,created_at) VALUES (?,?,?,?,?,"
+            "datetime('now','+5 seconds'))", (db.new_id(), g1, "fetch", "warn", "HTTP Error 404: Not Found"))
+con.commit(); con.close()
+rcalls = []
+s = sideload.retry(execute=True, delay=0,
+                   reprocess_fn=lambda iid: rcalls.append(iid) or {"status": "ACTIONABLE"}, out=_silent)
+check("retry: once the re-run confirms the 404, it is gone again", g1 not in rcalls and s["skipped_gone"] == 1,
+      (rcalls, s["skipped_gone"]))
+check("archive-gone: ...and can be archived again",
+      sideload.archive_gone(execute=False, out=_silent)["gone"] == 1)
+
 print(f"\n{sum(_passed)}/{len(_passed)} checks passed\n")
 sys.exit(0 if all(_passed) else 1)

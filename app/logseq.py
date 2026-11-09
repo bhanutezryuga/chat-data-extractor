@@ -96,11 +96,24 @@ def _is_study(category):
     return (category or "") in config.LOGSEQ_TODO_CATEGORIES
 
 
-def _tags(item, task):
+FALLBACK_TAG = "fallback-model"
+
+
+def made_by_fallback(extraction):
+    """True if the extraction came from a fallback Gemini model (the main one was out of limits or
+    overloaded) — see pipeline._write_result."""
+    try:
+        return bool(json.loads((extraction or {}).get("raw_metadata") or "{}").get("fallback"))
+    except (ValueError, AttributeError):
+        return False
+
+
+def _tags(item, task, extraction=None):
     """Review tags grouped by action: the category (kept as the group anchor, e.g. Reading) followed
     by Gemini's topic tags, normalized to lowercase-hyphenated single tokens so the same concept
     doesn't fragment into `Book-Recommendation` vs `book-recommendations`. Content-type (reel/post/…)
-    is intentionally excluded as noise."""
+    is intentionally excluded as noise. A page made by a fallback model also gets `fallback-model`,
+    so those pages can be listed in Logseq and redone later."""
     out, seen = [], set()
     cat = (item.get("category") or "").strip()
     if cat:
@@ -111,7 +124,10 @@ def _tags(item, task):
         if tok and tok not in seen:
             seen.add(tok)
             out.append(tok)
-    return out[:8]
+    out = out[:8]
+    if made_by_fallback(extraction):
+        out.append(FALLBACK_TAG)
+    return out
 
 
 def render_page(item, extraction, coll_items, task):
@@ -125,7 +141,7 @@ def render_page(item, extraction, coll_items, task):
     props = []
     if item.get("title"):
         props.append(_prop("title", _oneline(item["title"])))
-    tags = _tags(item, task)
+    tags = _tags(item, task, ex)
     if tags:
         props.append(_prop("tags", ", ".join(tags)))
 

@@ -127,6 +127,16 @@ CREATE TABLE IF NOT EXISTS gemini_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_created ON gemini_usage(created_at);
 
+-- Every request sent to Gemini, per model, INCLUDING failed ones (Google counts a 503/429
+-- against the quota too). Drives the per-model rate-limit view and the model switching.
+CREATE TABLE IF NOT EXISTS gemini_calls (
+  id         TEXT PRIMARY KEY,
+  model      TEXT NOT NULL,
+  outcome    TEXT NOT NULL,                        -- ok | 429 | 503 | error
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_calls_model_created ON gemini_calls(model, created_at);
+
 -- PKM: extensible category taxonomy (each category maps to a typed collection)
 CREATE TABLE IF NOT EXISTS categories (
   id         TEXT PRIMARY KEY,

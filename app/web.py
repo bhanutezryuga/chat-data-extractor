@@ -163,12 +163,14 @@ class Handler(BaseHTTPRequestHandler):
             rows = _rows(con,
                          "SELECT i.id, i.title, i.raw_url, i.status, i.category, "
                          "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id "
-                         " AND p.status IN ('warn','error') ORDER BY p.created_at DESC LIMIT 1) AS reason "
+                         " AND p.status IN ('warn','error') ORDER BY p.created_at DESC LIMIT 1) AS reason, "
+                         "(SELECT p.step FROM processing_logs p WHERE p.item_id=i.id "
+                         " AND p.status IN ('warn','error') ORDER BY p.created_at DESC LIMIT 1) AS reason_step "
                          "FROM items i WHERE i.status IN ('FAILED','NEEDS_REVIEW') "
                          "ORDER BY i.status, i.created_at DESC LIMIT 300")
             con.close()
             for r in rows:
-                r["error_category"], r["error_label"] = failures.classify(r["reason"])
+                r["error_category"], r["error_label"] = failures.classify(r["reason"], r["reason_step"])
             return self._send(200, {"count": len(rows), "items": rows,
                                     "retry_running": _retry_state["running"],
                                     "last_retry": _retry_state["last"]})
@@ -194,11 +196,13 @@ class Handler(BaseHTTPRequestHandler):
             rows = _rows(con,
                          "SELECT i.id, i.title, i.raw_url, i.category, i.updated_at, "
                          "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id "
-                         " AND p.status IN ('warn','error') ORDER BY p.created_at DESC LIMIT 1) AS reason "
+                         " AND p.status IN ('warn','error') ORDER BY p.created_at DESC LIMIT 1) AS reason, "
+                         "(SELECT p.step FROM processing_logs p WHERE p.item_id=i.id "
+                         " AND p.status IN ('warn','error') ORDER BY p.created_at DESC LIMIT 1) AS reason_step "
                          "FROM items i WHERE i.status='ARCHIVED' ORDER BY i.updated_at DESC LIMIT 300")
             con.close()
             for r in rows:
-                r["error_category"], r["error_label"] = failures.classify(r["reason"])
+                r["error_category"], r["error_label"] = failures.classify(r["reason"], r["reason_step"])
             return self._send(200, {"count": len(rows), "items": rows})
 
         return self._send(404, {"error": "not found"})
