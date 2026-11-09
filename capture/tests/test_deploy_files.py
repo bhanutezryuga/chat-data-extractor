@@ -53,3 +53,5 @@ def test_docs_cover_phone_install_and_update():
     guide = Path("deploy/box/BOX_SETUP.html").read_text(encoding="utf-8")
     assert "deploy/box/BOX_SETUP.html" in readme
     assert "Add to Home screen" in guide and "update.sh" in guide
+    for text in ("Phone check", "Install on your phone", "Always-on VPN"):
+        assert text in guide
