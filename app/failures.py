@@ -21,6 +21,8 @@ _RULES = [
         "timeout", "Network timeout"),
     (re.compile(r'blocked non-public URL|blocked: not a public', re.I),
         "blocked", "Blocked by the SSRF guard (resolved to a non-public address)"),
+    (re.compile(r'Gemini quota used up on every model', re.I),
+        "budget", "Gemini's free quota is used up on every model — retry after the daily reset"),
     (re.compile(r'daily Gemini budget reached', re.I),
         "budget", "Daily Gemini budget reached — retries once the budget resets"),
     (re.compile(r'no rule matched', re.I),
@@ -34,12 +36,24 @@ _RULES = [
 ]
 
 
-def classify(reason):
+_AI_BUSY = "The AI service (Gemini) is busy — try again later"
+
+
+def is_ai_busy(reason, step):
+    """True when the failure is Gemini itself being overloaded (a 503 at the extract step)."""
+    return step == "extract" and classify(reason, step)[0] == "unavailable"
+
+
+def classify(reason, step=None):
     """(category, label) for a raw processing-log reason string.
+    `step` is the processing-log step that logged it: a 503 from the extract step is Gemini
+    being overloaded, not the link, so it gets its own label.
     Falls back to ("error", <trimmed raw text>) when nothing matches."""
     r = (reason or "").strip()
     for pattern, category, label in _RULES:
         if pattern.search(r):
+            if category == "unavailable" and step == "extract":
+                return category, _AI_BUSY
             return category, label
     return "error", (r[:140] or "Unknown error")
 

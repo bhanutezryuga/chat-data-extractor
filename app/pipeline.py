@@ -119,6 +119,8 @@ def _set_status(con, item_id, status, rule=None, confidence=None):
 def _write_result(con, item_id, rule, meta, data, kind):
     if data.get("_usage"):
         usage.record(con, item_id, data.get("_model"), kind, data["_usage"])
+    if data.get("_fallback"):         # made by a fallback model — labelled on the page + in the reply
+        meta = dict(meta, fallback=True)
     con.execute(
         "INSERT INTO extractions (id,item_id,summary,transcript,key_points,list_items,translation,detected_language,recipe,sections,raw_metadata,source,model,created_at)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

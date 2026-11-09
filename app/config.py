@@ -23,7 +23,11 @@ _load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+# Models in order of preference: the first is the main one, the rest are fallbacks used when an
+# earlier one is out of its limits or overloaded. GEMINI_MODEL alone = a single-model list.
+GEMINI_MODELS      = ([m.strip() for m in os.environ.get("GEMINI_MODELS", "").split(",") if m.strip()]
+                      or [os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()])
+GEMINI_MODEL       = GEMINI_MODELS[0]
 HOST               = os.environ.get("HOST", "127.0.0.1")
 PORT               = int(os.environ.get("PORT", "8000"))
 DB_PATH            = os.environ.get("DB_PATH", str(ROOT / "data" / "app.db"))
@@ -87,5 +91,26 @@ TELEGRAM_ALLOWED_CHAT_IDS = {c.strip() for c in
 # --- V2: Gemini usage limits (NO balance API exists; these are editable rate-limit guides). ---
 # Verify current values at https://ai.google.dev/gemini-api/docs/rate-limits
 DAILY_TOKEN_BUDGET = int(os.environ.get("DAILY_TOKEN_BUDGET", "1000000"))  # our own soft daily cap
+GEMINI_RPM_LIMIT   = int(os.environ.get("GEMINI_RPM_LIMIT", "10"))         # requests/minute (for display)
 GEMINI_RPD_LIMIT   = int(os.environ.get("GEMINI_RPD_LIMIT", "250"))        # requests/day (free-tier-ish default)
 GEMINI_TPM_LIMIT   = int(os.environ.get("GEMINI_TPM_LIMIT", "250000"))     # tokens/minute (for display)
+
+
+def _parse_limits(spec):
+    """"model=rpm/tpm/rpd,model=rpm/tpm/rpd" -> {model: {"rpm":..,"tpm":..,"rpd":..}} (bad entries skipped)."""
+    out = {}
+    for part in (spec or "").split(","):
+        name, _, nums = part.strip().partition("=")
+        vals = nums.strip().split("/")
+        if name.strip() and len(vals) == 3 and all(v.strip().isdigit() for v in vals):
+            out[name.strip()] = dict(zip(("rpm", "tpm", "rpd"), (int(v) for v in vals)))
+    return out
+
+
+# Per-model limits (read them off https://ai.dev/rate-limit). A model not listed here falls back to
+# the three GEMINI_*_LIMIT values above if it is the main model, else its limits are unknown and
+# it is simply tried until Google answers 429.
+GEMINI_LIMITS      = _parse_limits(os.environ.get("GEMINI_LIMITS", ""))
+# After a 503 (model overloaded) leave that model alone for this long — failed requests still
+# count against the daily quota, so hammering an overloaded model burns it for nothing.
+GEMINI_OVERLOAD_COOLDOWN = int(os.environ.get("GEMINI_OVERLOAD_COOLDOWN", "300"))   # seconds

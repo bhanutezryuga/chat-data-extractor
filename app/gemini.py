@@ -10,10 +10,13 @@ so the caller can meter token consumption. Without an API key, `stub()` runs off
 import base64
 import json
 import re
+import threading
+import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 
-from . import config
+from . import config, usage
 
 ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/models/"
             "{model}:generateContent?key={key}")
@@ -134,8 +137,21 @@ def _generate(parts, model, media_resolution=None, timeout=300, _retry=True):
     endpoint = ENDPOINT.format(model=model, key=config.GEMINI_API_KEY)
     req = urllib.request.Request(endpoint, data=payload,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        out = json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            out = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 429:               # the only place Google tells us the real limit + wait
+            usage.note_429(model, e.read())
+        elif e.code == 503:             # overloaded: leave this model alone for a while
+            usage.note_503(model)
+        # a failed request still counts against the quota on Google's side
+        usage.record_call(model, str(e.code) if e.code in (429, 503) else "error")
+        raise
+    except Exception:
+        usage.record_call(model, "error")
+        raise
+    usage.record_call(model, "ok")
     text_out = out["candidates"][0]["content"]["parts"][0]["text"]
     try:
         data = _loads(text_out)
@@ -146,6 +162,81 @@ def _generate(parts, model, media_resolution=None, timeout=300, _retry=True):
     data["_model"] = model
     data["_usage"] = out.get("usageMetadata", {})
     return data
+
+
+class NoModelAvailable(Exception):
+    """Every model in the list is out of limits or cooling down — no request was sent."""
+
+
+_local = threading.local()
+_sleep = time.sleep
+_PATIENT_WAIT = 65      # seconds a background run waits for a per-minute limit to clear
+_PATIENT_STEP = 5
+
+
+@contextmanager
+def patient():
+    """Background work (a /retry run) is in no hurry: inside this block a model that is only at a
+    per-minute limit is waited for (about a minute at most) instead of dropping to a weaker one.
+    Live captures don't use it, so they switch at once."""
+    prev = getattr(_local, "patient", False)
+    _local.patient = True
+    try:
+        yield
+    finally:
+        _local.patient = prev
+
+
+def _models(first=None):
+    """The models to try, in order. `first` puts a specific model at the front (the video model)."""
+    models = list(config.GEMINI_MODELS)
+    if first and first != models[0]:
+        models = [first] + [m for m in models if m != first]
+    return models
+
+
+def _wait_for_minute_limit(models):
+    """Patient mode: if the best model that isn't out for the day/overloaded is only at a
+    per-minute limit, wait for it rather than switching down."""
+    waited = 0
+    while waited < _PATIENT_WAIT:
+        blocks = [usage.availability(m) for m in models]
+        best = next((b for b in blocks if b is None or b["reason"] == "minute"), False)
+        if not best:                    # free (None), or nothing worth waiting for (False)
+            return
+        _sleep(_PATIENT_STEP)
+        waited += _PATIENT_STEP
+
+
+def _generate_any(parts, media_resolution=None, first=None):
+    """_generate on the first model in the list that is usable right now, moving to the next one
+    when a model is out of limits (429) or overloaded (503). The result carries `_fallback`:
+    True when it was not produced by the preferred model."""
+    models = _models(first)
+    if getattr(_local, "patient", False):
+        _wait_for_minute_limit(models)
+    last, reasons = None, []
+    for model in models:
+        block = usage.availability(model)
+        if block:
+            reasons.append(block["reason"])
+            continue
+        try:
+            data = _generate(parts, model, media_resolution)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503):
+                last = e
+                continue
+            raise
+        data["_fallback"] = model != models[0]
+        return data
+    if last is not None:
+        raise last
+    if reasons and all(r == "daily" for r in reasons):
+        raise NoModelAvailable("Gemini quota used up on every model until the daily reset")
+    if "overloaded" in reasons:
+        raise NoModelAvailable("Service Unavailable: every Gemini model is overloaded or out of quota right now")
+    raise NoModelAvailable("rate limit: every Gemini model is at its per-minute limit")
 
 
 def _prompt(rule, url, extra=""):
@@ -163,7 +254,7 @@ def translate(text, to=None):
     to = to or config.TRANSLATE_TO
     prompt = (f"Translate the text below into {to}, faithfully. Return ONLY JSON: "
               '{"translation": str, "detected_language": str}.\n\nTEXT:\n' + (text or "")[:8000])
-    return _generate([{"text": prompt}], config.GEMINI_MODEL)
+    return _generate_any([{"text": prompt}])
 
 
 def extract(rule, url, text, pdf_bytes=None):
@@ -173,7 +264,7 @@ def extract(rule, url, text, pdf_bytes=None):
                                   "data": base64.b64encode(pdf_bytes).decode()}}]
     else:
         parts = [{"text": _prompt(rule, url, f"CONTENT:\n{(text or '')[:12000]}")}]
-    return _generate(parts, config.GEMINI_MODEL)
+    return _generate_any(parts)
 
 
 def analyze_video(rule, url, video_bytes=None, youtube_url=None):
@@ -191,11 +282,11 @@ def analyze_video(rule, url, video_bytes=None, youtube_url=None):
     parts = [{"text": prompt}, media]
     res = _MEDIA_RES.get(config.MEDIA_RESOLUTION)
     try:
-        return _generate(parts, config.GEMINI_VIDEO_MODEL, media_resolution=res)
+        return _generate_any(parts, media_resolution=res, first=config.GEMINI_VIDEO_MODEL)
     except urllib.error.HTTPError as e:
         # Some models/versions reject mediaResolution — retry once without it.
         if e.code == 400 and res:
-            return _generate(parts, config.GEMINI_VIDEO_MODEL, media_resolution=None)
+            return _generate_any(parts, first=config.GEMINI_VIDEO_MODEL)
         raise
 
 
@@ -210,8 +301,7 @@ def analyze_images(rule, url, images, caption=""):
     for b in images:
         parts.append({"inline_data": {"mime_type": "image/jpeg",
                                       "data": base64.b64encode(b).decode()}})
-    return _generate(parts, config.GEMINI_MODEL,
-                     media_resolution=_MEDIA_RES.get(config.MEDIA_RESOLUTION))
+    return _generate_any(parts, media_resolution=_MEDIA_RES.get(config.MEDIA_RESOLUTION))
 
 
 def stub(rule, url, text):

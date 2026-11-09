@@ -20,7 +20,7 @@ import argparse
 import hashlib
 import time
 
-from . import config, db, failures, instagram, netguard, pipeline, usage
+from . import config, db, failures, gemini, instagram, netguard, pipeline, usage
 
 
 # ---- parsing --------------------------------------------------------------
@@ -137,6 +137,27 @@ def _recent_429(con, item_id):
         "AND created_at >= datetime('now','-5 minutes') LIMIT 1", (item_id,)).fetchone())
 
 
+def _ai_busy(con, item_id):
+    """True if this item's latest failure is Gemini being overloaded (503 at the extract step)."""
+    r = con.execute("SELECT detail, step FROM processing_logs WHERE item_id=? AND status IN ('warn','error') "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT 1", (item_id,)).fetchone()
+    return bool(r) and failures.is_ai_busy(r["detail"], r["step"])
+
+
+# When the latest failure was logged, and when the item was last restored from the archive.
+_CHECKED_COLS = ("(SELECT p.created_at FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
+                 " ORDER BY p.created_at DESC LIMIT 1) AS reason_at, "
+                 "(SELECT MAX(u.created_at) FROM processing_logs u WHERE u.item_id=i.id AND u.step='unarchive') "
+                 "AS restored_at ")
+
+
+def _gone(row):
+    """A stuck row that is permanently gone AND hasn't been restored from the archive since that
+    verdict. A restored item gets re-checked: its old 404 may be from a dead Instagram session
+    (which looks exactly like a deleted post), and skipping it forever would strand a live post."""
+    return _is_gone(row.get("reason")) and not (row.get("restored_at") or "") >= (row.get("reason_at") or "~")
+
+
 def _is_gone(reason):
     """A permanently unrecoverable failure — a deleted/removed post (HTTP 404 Not Found / 410 Gone).
     Retrying these only wastes a request and, since they always re-fail, would trip the
@@ -148,13 +169,15 @@ def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
           reprocess_fn=None, out=print):
     """Reprocess items stuck in FAILED / NEEDS_REVIEW (mostly transient — rate-limits, 503s, blips).
     Gentle: one at a time with a delay, bailing fast on an Instagram logout, 2 consecutive 429s,
+    3 consecutive "Gemini is overloaded" failures (each failed request still costs quota),
     4 consecutive non-recoveries, or the daily budget — so it never hammers a dead session.
+    Runs in gemini.patient() mode: it waits out a per-minute limit rather than using a weaker model.
     Dry-run unless execute=True. Returns a summary dict."""
     reprocess_fn = reprocess_fn or pipeline.reprocess
     con = db.connect()
     q = ("SELECT i.id, i.raw_url, i.status, "
          "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
-         " ORDER BY p.created_at DESC LIMIT 1) AS reason "
+         " ORDER BY p.created_at DESC LIMIT 1) AS reason, " + _CHECKED_COLS +
          "FROM items i WHERE i.status IN ('FAILED','NEEDS_REVIEW')"
          + ("" if not sideload_only else " AND i.source_chat_id='sideload'") + " ORDER BY i.created_at")
     rows = [dict(r) for r in con.execute(q)]
@@ -162,8 +185,8 @@ def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
 
     # Drop permanently-gone items (deleted/removed posts) up front: retrying them is pointless and
     # they'd otherwise trip the consecutive-non-recovery bail-out before any recoverable item runs.
-    gone = [r for r in rows if _is_gone(r.get("reason"))]
-    live = [r for r in rows if not _is_gone(r.get("reason"))]
+    gone = [r for r in rows if _gone(r)]
+    live = [r for r in rows if not _gone(r)]
 
     before = {}
     for r in rows:
@@ -181,7 +204,7 @@ def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
 
     targets = live if limit is None else live[:limit]
     out(f"  reprocessing {len(targets)}" + (f" (limit {limit})" if limit is not None else "") + "...")
-    consec_429 = consec_fail = 0
+    consec_429 = consec_fail = consec_busy = 0
     for i, it in enumerate(targets, 1):
         if "instagram.com" in (it["raw_url"] or "") and not instagram._cookie_header():
             summary["stopped"] = "logged_out"
@@ -191,10 +214,12 @@ def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
             summary["stopped"] = "budget"
             out("  daily Gemini budget reached -> STOP (resume later)"); break
         try:
-            st = (reprocess_fn(it["id"]) or {}).get("status", "?")
+            with gemini.patient():
+                st = (reprocess_fn(it["id"]) or {}).get("status", "?")
         except Exception as e:
             st = "ERROR"; out(f"  [{i}/{len(targets)}] ERROR {it['id'][:8]}: {e}")
-        con = db.connect(); got_429 = _recent_429(con, it["id"]); con.close()
+        con = db.connect(); got_429 = _recent_429(con, it["id"])
+        busy = st != "ACTIONABLE" and _ai_busy(con, it["id"]); con.close()
         summary["results"][st] = summary["results"].get(st, 0) + 1
         summary["processed"] += 1
         if st == "ACTIONABLE":
@@ -202,6 +227,9 @@ def retry(*, execute=False, limit=None, delay=8.0, sideload_only=True,
         out(f"  [{i}/{len(targets)}] {st}{' [429]' if got_429 else ''}  {(it['raw_url'] or it['id'])[:60]}")
         consec_429 = consec_429 + 1 if got_429 else 0
         consec_fail = 0 if st == "ACTIONABLE" else consec_fail + 1
+        consec_busy = consec_busy + 1 if busy else 0
+        if consec_busy >= 3:
+            summary["stopped"] = "ai_busy"; out("  Gemini overloaded 3 times in a row -> STOP (try later)"); break
         if consec_429 >= 2:
             summary["stopped"] = "rate_limited"; out("  2 consecutive 429s -> STOP before escalation"); break
         if consec_fail >= 4:
@@ -224,10 +252,10 @@ def archive_gone(*, execute=False, sideload_only=True, out=print, ids=None):
     con = db.connect()
     q = ("SELECT i.id, i.raw_url, i.status, "
          "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
-         " ORDER BY p.created_at DESC LIMIT 1) AS reason "
+         " ORDER BY p.created_at DESC LIMIT 1) AS reason, " + _CHECKED_COLS +
          "FROM items i WHERE i.status IN ('FAILED','NEEDS_REVIEW')"
          + ("" if not sideload_only else " AND i.source_chat_id='sideload'"))
-    gone = [r for r in (dict(x) for x in con.execute(q)) if _is_gone(r.get("reason"))]
+    gone = [r for r in (dict(x) for x in con.execute(q)) if _gone(r)]
     if ids is not None:
         ids = set(ids)
         gone = [r for r in gone if r["id"] in ids]

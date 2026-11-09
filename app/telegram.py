@@ -219,6 +219,8 @@ def _format_result(item_id):
         body = body[:3500].rstrip() + "\n…" + ("\nFull notes are on the Logseq page."
                                               if action == "detail" and logseq.active() else "")
     text = head + (body or "(processing…)")
+    if ex and action != "translate" and logseq.made_by_fallback(dict(ex)):
+        text += f"\n\n⚙️ Fallback model: {ex['model']} (the main one was busy or out of quota)"
     return text, _action_kbd(item_id, action)
 
 
@@ -331,11 +333,13 @@ def _ack(item_id):
     it = con.execute(
         "SELECT i.status, i.content_type, i.raw_url, "
         "(SELECT p.detail FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
-        " ORDER BY p.created_at DESC LIMIT 1) AS reason FROM items i WHERE i.id=?", (item_id,)).fetchone()
+        " ORDER BY p.created_at DESC LIMIT 1) AS reason, "
+        "(SELECT p.step FROM processing_logs p WHERE p.item_id=i.id AND p.status IN ('warn','error') "
+        " ORDER BY p.created_at DESC LIMIT 1) AS reason_step FROM items i WHERE i.id=?", (item_id,)).fetchone()
     con.close()
     if not it:
         return "⚠️ Couldn't save this — send /retry to try again."
-    category, label = failures.classify(it["reason"])
+    category, label = failures.classify(it["reason"], it["reason_step"])
     what = it["content_type"] if it["content_type"] not in (None, "", "unknown") else "link"
     head = (f"⚠️ Couldn't save this {what}" if it["status"] == "FAILED"
             else f"🔎 Couldn't read this {what}")
@@ -475,6 +479,11 @@ def _send_pending(chat_id):
         _reoffer(chat_id, r["id"], r["raw_url"] or "(no link)")
 
 
+# sideload.retry stop reasons that deserve plain words in the /retry reply
+_STOP_WHY = {"ai_busy": "Gemini is overloaded — try again later",
+             "budget": "Gemini quota used up for today"}
+
+
 def handle_update(u):
     if u.get("callback_query"):
         return _handle_callback(u["callback_query"])
@@ -523,7 +532,7 @@ def handle_update(u):
             s = web._retry_state["last"] or {}
             send_message(chat_id, f"✅ Retry done — reprocessed {s.get('processed', 0)}, "
                                   f"recovered {s.get('recovered', 0)}"
-                         + (f" — stopped: {s['stopped']}" if s.get("stopped") else ""))
+                         + (f" — stopped: {_STOP_WHY.get(s['stopped'], s['stopped'])}" if s.get("stopped") else ""))
         threading.Thread(target=_run, daemon=True).start()
         return
 
