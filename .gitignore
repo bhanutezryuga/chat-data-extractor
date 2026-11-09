@@ -40,3 +40,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# capture app
+.venv-capture/
+capture/capture.env
+data-capture/

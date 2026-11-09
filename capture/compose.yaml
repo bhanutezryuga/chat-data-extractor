@@ -1,0 +1,25 @@
+x-capture: &capture
+  build:
+    context: ..
+    dockerfile: capture/Dockerfile
+  env_file: capture.env
+  volumes:
+    - "${CAPTURE_DATA_DIR:-../data-capture}:/data"
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *capture
+    command: ["uvicorn", "--factory", "capture.web:make_app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    <<: *capture
+    # Placeholder until the real worker exists (python -m capture.worker).
+    command: ["python", "-c", "import time; time.sleep(1e9)"]
