@@ -1,0 +1,36 @@
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+def _find_bash():
+    git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
+    if git_bash.exists():
+        return str(git_bash)
+    return shutil.which("bash")
+
+
+def test_web_published_on_localhost_only():
+    text = Path("capture/compose.yaml").read_text()
+    port_lines = [l.strip() for l in text.splitlines() if re.search(r'\d+:\d+"?\s*$', l) and "image" not in l]
+    assert port_lines == ['- "127.0.0.1:8000:8000"']  # exactly one published port, bound to localhost
+
+
+def test_env_file_is_gitignored():
+    out = subprocess.run(["git", "check-ignore", "capture/capture.env"], capture_output=True, text=True)
+    assert out.returncode == 0
+
+
+def test_setup_script_parses():
+    bash = _find_bash()
+    if not bash:
+        pytest.skip("no usable bash on this machine")
+    assert subprocess.run([bash, "-n", "deploy/box/setup.sh"]).returncode == 0
+    assert subprocess.run([bash, "-n", "deploy/box/update.sh"]).returncode == 0
+
+
+def test_env_example_has_no_real_login():
+    assert "CAPTURE_ALLOWED_LOGINS=you@example.com" in Path("capture/capture.env.example").read_text()

@@ -1,0 +1,7 @@
+# Build context is the repo root; send only capture/ to the daemon.
+*
+!capture/
+capture/capture.env
+capture/tests
+**/__pycache__
+**/*.pyc

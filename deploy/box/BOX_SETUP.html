@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capture box setup</title>
+<style>
+  :root { --bg:#fbfaf7; --fg:#1f2328; --muted:#59636e; --card:#fff; --line:#d8d4cb; --accent:#0b6bcb; --code:#f0eee8; --ok:#1a7f37; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181b; --fg:#e6e6e6; --muted:#9aa4af; --card:#1f2226; --line:#33383e; --accent:#6cb2ff; --code:#272b30; --ok:#56d364; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:44rem; margin:0 auto; padding:1.5rem 16px 4rem; }
+  h1 { font-size:1.6rem; margin:0 0 .25rem; }
+  h2 { font-size:1.15rem; margin:2rem 0 .5rem; }
+  p.lead { color:var(--muted); margin-top:0; }
+  ol { padding-left:1.3rem; }
+  li { margin:1.1rem 0; }
+  code, pre { background:var(--code); border-radius:6px; font:.9em ui-monospace,Menlo,Consolas,monospace; }
+  code { padding:.1em .35em; }
+  pre { padding:.7rem .9rem; overflow-x:auto; margin:.5rem 0; }
+  pre code { padding:0; background:none; }
+  .box { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--ok); border-radius:8px; padding:.8rem 1rem; }
+  .table-wrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; min-width:30rem; background:var(--card); }
+  th, td { border:1px solid var(--line); padding:.5rem .7rem; text-align:left; vertical-align:top; }
+  th { background:var(--code); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Capture box setup</h1>
+  <p class="lead">Turn an old laptop into the always-on capture server, reachable only over your Tailscale network. Placeholders: <code>you@example.com</code> is your Tailscale login, <code>&lt;tailnet&gt;</code> is your tailnet name.</p>
+
+  <h2>Steps, in order</h2>
+  <ol>
+    <li><strong>Install Ubuntu Server 24.04</strong> on the old laptop. Enable the OpenSSH server option so you can finish from your main machine.</li>
+    <li><strong>Clone the repo</strong> to <code>/srv/chat-data-extractor</code>:
+<pre><code>sudo git clone &lt;repo-url&gt; /srv/chat-data-extractor
+sudo chown -R "$USER": /srv/chat-data-extractor
+cd /srv/chat-data-extractor</code></pre></li>
+    <li><strong>Run the setup script.</strong> It installs Docker, Tailscale and unattended upgrades, lets the lid close without sleeping, and joins the tailnet as <code>capture</code> (it prints a login link).
+<pre><code>sudo deploy/box/setup.sh</code></pre>
+      Then log out and back in so the <code>docker</code> group applies.</li>
+    <li><strong>In the Tailscale admin console, enable MagicDNS and HTTPS certificates</strong> (DNS page). Do this before step 7, or the certificate step will fail.</li>
+    <li><strong>Create the env file.</strong> Copy the example and set your Tailscale login email:
+<pre><code>cp capture/capture.env.example capture/capture.env
+# edit capture.env:
+CAPTURE_ALLOWED_LOGINS=you@example.com</code></pre>
+      Several logins can be comma-separated. An empty list refuses everyone. The file is git-ignored.</li>
+    <li><strong>Start the app:</strong>
+<pre><code>docker compose -f capture/compose.yaml up -d --build</code></pre></li>
+    <li><strong>Publish it on the tailnet:</strong>
+<pre><code>sudo tailscale serve --bg 8000</code></pre>
+      The app listens on <code>127.0.0.1:8000</code> only; Tailscale is the only way in.</li>
+    <li><strong>Install Tailscale on the phone</strong> (set it to "always on") <strong>and on the laptop</strong>, signed in to the same account.</li>
+    <li><strong>Open <code>https://capture.&lt;tailnet&gt;.ts.net</code></strong> on both.</li>
+  </ol>
+
+  <h2>Check it worked</h2>
+  <div class="box">
+    <ul>
+      <li>On the box: <code>docker compose -f capture/compose.yaml ps</code> shows <code>web</code> as healthy.</li>
+      <li>On the box: <code>curl -s http://127.0.0.1:8000/healthz</code> prints <code>{"ok":true}</code>.</li>
+      <li>On the phone: the https address above loads over mobile data with Wi-Fi off.</li>
+    </ul>
+  </div>
+
+  <h2>Updating later</h2>
+<pre><code>cd /srv/chat-data-extractor &amp;&amp; deploy/box/update.sh</code></pre>
+
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>You see</th><th>Cause and fix</th></tr>
+    <tr><td>403 "Not allowed"</td><td>The login you are signed in with is not in <code>CAPTURE_ALLOWED_LOGINS</code> in <code>capture.env</code>. Fix it, then run <code>docker compose -f capture/compose.yaml up -d</code>.</td></tr>
+    <tr><td>Certificate error in the browser</td><td>HTTPS certificates are not enabled in the Tailscale admin console. Enable them, then run <code>sudo tailscale serve --bg 8000</code> again.</td></tr>
+    <tr><td>Can't connect / times out</td><td>Tailscale is off on that device. Turn it on (phone: set to always on).</td></tr>
+  </table>
+  </div>
+</main>
+</body>
+</html>
