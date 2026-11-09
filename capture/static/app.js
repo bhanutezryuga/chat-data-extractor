@@ -3,13 +3,13 @@
   function countOutbox() {
     if (!("indexedDB" in window)) return Promise.resolve(0);
     return new Promise((resolve) => {
-      const req = indexedDB.open("capture-outbox", 1);
-      req.onupgradeneeded = () => req.result.createObjectStore("shares", { keyPath: "id" });
+      const req = indexedDB.open(Outbox.DB_NAME, Outbox.DB_VERSION);
+      req.onupgradeneeded = () => req.result.createObjectStore(Outbox.DB_STORE, { keyPath: "id" });
       req.onerror = () => resolve(0);
       req.onsuccess = () => {
         const db = req.result;
         try {
-          const c = db.transaction("shares", "readonly").objectStore("shares").count();
+          const c = db.transaction(Outbox.DB_STORE, "readonly").objectStore(Outbox.DB_STORE).count();
           c.onsuccess = () => { db.close(); resolve(c.result); };
           c.onerror = () => { db.close(); resolve(0); };
         } catch (e) { db.close(); resolve(0); }

@@ -50,3 +50,18 @@ test("flush drops 422", async () => {
   assert.deepEqual(result, { sent: 0, kept: 0, dropped: 1 });
   assert.equal(store.list.length, 0);
 });
+
+test("shouldQueueResponse queues server/proxy failures only", () => {
+  for (const s of [500, 502, 503, 504, 408, 429]) assert.equal(Outbox.shouldQueueResponse(s), true, String(s));
+  for (const s of [0, 200, 303, 401, 403, 422]) assert.equal(Outbox.shouldQueueResponse(s), false, String(s));
+});
+
+test("escapeHtml escapes & < > \" '", () => {
+  assert.equal(Outbox.escapeHtml(`&<>"'`), "&amp;&lt;&gt;&quot;&#39;");
+});
+
+test("db constants", () => {
+  assert.equal(Outbox.DB_NAME, "capture-outbox");
+  assert.equal(Outbox.DB_VERSION, 1);
+  assert.equal(Outbox.DB_STORE, "shares");
+});

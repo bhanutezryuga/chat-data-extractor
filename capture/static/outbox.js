@@ -1,5 +1,19 @@
 (function (root) {
   const Outbox = {
+    DB_NAME: "capture-outbox",
+    DB_VERSION: 1,
+    DB_STORE: "shares",
+
+    // An online /share response that should be queued instead of shown (server or proxy down).
+    shouldQueueResponse(status) {
+      return status >= 500 || status === 408 || status === 429;
+    },
+
+    escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    },
+
     shareToText({ title, text, url } = {}) {
       const parts = [];
       for (const raw of [url, text, title]) {
