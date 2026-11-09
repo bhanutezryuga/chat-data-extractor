@@ -21,5 +21,4 @@ services:
 
   worker:
     <<: *capture
-    # Placeholder until the real worker exists (python -m capture.worker).
-    command: ["python", "-c", "import time; time.sleep(1e9)"]
+    command: ["python", "-m", "capture.worker"]
