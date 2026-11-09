@@ -23,7 +23,8 @@ def extract_url(text: str) -> str | None:
                 break
         elif last in _TRAILING:
             pass
-        elif not (ord(last) > 127 and unicodedata.category(last) in _STRIP_CATS or unicodedata.category(last)[0] in "SP"):
+        elif not (ord(last) > 127 and (unicodedata.category(last) in _STRIP_CATS
+                                      or unicodedata.category(last)[0] in "SP")):
             break
         url = url[:-1]
     if not url:

@@ -116,7 +116,7 @@ def test_encoded_url_unchanged(opener):
     u = "https://example.com/a%20b/K%C3%B6ln?x=1&y=%C3%A9#f"
     o = opener(FakeResp(b"<title>K</title>"))
     fetch_title(u)
-    assert o.calls[0].full_url == u.split("#")[0] or o.calls[0].full_url == u
+    assert o.calls[0].full_url == u
 
 
 def test_idna_host(opener):

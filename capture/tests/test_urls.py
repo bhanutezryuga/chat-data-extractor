@@ -78,3 +78,18 @@ def test_extract_url_keeps_non_ascii_path():
 
 def test_extract_url_hostless_is_none():
     assert extract_url("https://… more") is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://en.wikipedia.org/wiki/C++",
+    "https://example.com/dir/",
+    "https://x.com/?q=a&b=",
+    "https://example.com/a_",
+    "https://example.com/a-",
+    "https://example.com/a~",
+    "https://example.com/a*",
+    "https://example.com/a$",
+])
+def test_ascii_trailing_chars_kept(url):
+    assert extract_url(url) == url
+    assert extract_url(f"see {url} and more") == url
