@@ -141,3 +141,9 @@ def test_share_requires_login(client, settings):
     assert _items(client) == []
     r = client.post("/share", data={"text": "x"}, headers={LOGIN_HEADER: "other@example.com"})
     assert r.status_code == 403
+
+
+def test_two_hostless_shares_make_two_items(client):
+    client.post("/api/capture", json={"text": "https://… one"})
+    client.post("/api/capture", json={"text": "https://… two"})
+    assert len(_items(client)) == 2

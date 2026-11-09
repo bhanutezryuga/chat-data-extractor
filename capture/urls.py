@@ -6,6 +6,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 _URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
 _TRAILING = ".,;:!?)]\"'…"
 _DROP_PARAMS = {"igsh", "igshid", "fbclid", "gclid", "si", "ref", "ref_src", "feature"}
+_STRIP_CATS = {"Mn", "Me", "Cf"}
 _IG_KINDS = {"p", "reel", "reels", "tv"}
 
 
@@ -22,10 +23,17 @@ def extract_url(text: str) -> str | None:
                 break
         elif last in _TRAILING:
             pass
-        elif not (ord(last) > 127 and unicodedata.category(last)[0] in "SP"):
+        elif not (ord(last) > 127 and unicodedata.category(last) in _STRIP_CATS or unicodedata.category(last)[0] in "SP"):
             break
         url = url[:-1]
-    return url or None
+    if not url:
+        return None
+    try:
+        if not urlsplit(url).hostname:
+            return None
+    except ValueError:
+        return None
+    return url
 
 
 def _host(netloc: str) -> str:

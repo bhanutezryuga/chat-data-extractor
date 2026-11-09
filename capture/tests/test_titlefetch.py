@@ -104,3 +104,33 @@ def test_reads_at_most_max_bytes_and_sends_user_agent(opener):
     fetch_title(URL)
     assert resp.read_sizes == [titlefetch.MAX_BYTES]
     assert o.calls[0].get_header("User-agent") == "Mozilla/5.0 (compatible; CaptureBot/1.0)"
+
+
+def test_iri_converted_to_uri(opener):
+    o = opener(FakeResp(b"<title>K</title>"))
+    assert fetch_title("https://de.wikipedia.org/wiki/Köln") == "K"
+    assert o.calls[0].full_url == "https://de.wikipedia.org/wiki/K%C3%B6ln"
+
+
+def test_encoded_url_unchanged(opener):
+    u = "https://example.com/a%20b/K%C3%B6ln?x=1&y=%C3%A9#f"
+    o = opener(FakeResp(b"<title>K</title>"))
+    fetch_title(u)
+    assert o.calls[0].full_url == u.split("#")[0] or o.calls[0].full_url == u
+
+
+def test_idna_host(opener):
+    o = opener(FakeResp(b"<title>K</title>"))
+    fetch_title("https://bücher.example/x?q=é")
+    assert o.calls[0].full_url == "https://xn--bcher-kva.example/x?q=%C3%A9"
+
+
+def test_bad_idna_host_is_permanent(opener):
+    o = opener(FakeResp(b"<title>K</title>"))
+    assert fetch_title("https://" + "a" * 70 + ".ü.example/") is None
+    assert o.calls == []
+
+
+def test_unicode_error_while_opening_is_permanent(opener):
+    opener(UnicodeEncodeError("ascii", "x", 0, 1, "bad"))
+    assert fetch_title(URL) is None

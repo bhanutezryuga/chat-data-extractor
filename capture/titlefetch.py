@@ -2,6 +2,7 @@
 import html
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from capture import netguard
@@ -36,16 +37,46 @@ def parse_title(page: str) -> str | None:
     return _clean(m.group(1)) if m else None
 
 
+_SAFE = "/%:@!$&'()*+,;=-._~?"
+
+
+def to_uri(url: str) -> str:
+    """Percent-encode an IRI (non-ASCII host/path/query); ASCII URIs pass through."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    netloc = host.encode("idna").decode("ascii")
+    if ":" in netloc:
+        netloc = f"[{netloc}]"
+    if parts.username is not None:
+        user = urllib.parse.quote(parts.username, safe=_SAFE)
+        if parts.password is not None:
+            user += ":" + urllib.parse.quote(parts.password, safe=_SAFE)
+        netloc = f"{user}@{netloc}"
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    return urllib.parse.urlunsplit((
+        parts.scheme, netloc,
+        urllib.parse.quote(parts.path, safe=_SAFE),
+        urllib.parse.quote(parts.query, safe=_SAFE),
+        urllib.parse.quote(parts.fragment, safe=_SAFE)))
+
+
 def fetch_title(url: str, *, timeout: float = 15) -> str | None:
-    if not netguard.is_safe_public_url(url):
-        raise Blocked(url)
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
+        uri = to_uri(url)
+    except ValueError:  # includes UnicodeError (bad IDNA host) and bad ports
+        return None
+    if not netguard.is_safe_public_url(uri):
+        raise Blocked(url)
+    try:
+        req = urllib.request.Request(uri, headers={"User-Agent": USER_AGENT})
         with netguard.safe_opener().open(req, timeout=timeout) as resp:
             raw = resp.read(MAX_BYTES)
             charset = resp.headers.get_content_charset()
     except netguard.BlockedRedirect as e:
         raise Blocked(url) from e
+    except ValueError:  # UnicodeError is a ValueError: permanent, not retryable
+        return None
     except urllib.error.HTTPError as e:
         if 400 <= e.code < 500:
             return None

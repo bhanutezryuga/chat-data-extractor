@@ -58,3 +58,23 @@ def test_extract_url_strips_unicode_trailers(tail):
 
 def test_extract_url_stops_at_space_before_emoji():
     assert extract_url("https://x.com/a 🔥") == "https://x.com/a"
+
+
+def test_extract_url_strips_trailing_variation_selector():
+    assert extract_url("watch https://youtu.be/abc❤️ now") == "https://youtu.be/abc"
+
+
+def test_extract_url_strips_zwj_emoji_sequence():
+    assert extract_url("https://youtu.be/abc\U0001F468‍\U0001F469‍\U0001F467") == "https://youtu.be/abc"
+
+
+def test_normalize_after_emoji_strip():
+    assert normalize_url(extract_url("https://youtu.be/abc❤️")) == "https://youtube.com/watch?v=abc"
+
+
+def test_extract_url_keeps_non_ascii_path():
+    assert extract_url("https://de.wikipedia.org/wiki/Köln") == "https://de.wikipedia.org/wiki/Köln"
+
+
+def test_extract_url_hostless_is_none():
+    assert extract_url("https://… more") is None
