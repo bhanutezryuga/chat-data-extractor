@@ -44,9 +44,9 @@ def fetch_title(url: str, *, timeout: float = 15) -> str | None:
         with netguard.safe_opener().open(req, timeout=timeout) as resp:
             raw = resp.read(MAX_BYTES)
             charset = resp.headers.get_content_charset()
+    except netguard.BlockedRedirect as e:
+        raise Blocked(url) from e
     except urllib.error.HTTPError as e:
-        if "blocked redirect" in str(e.reason):
-            raise Blocked(url) from e
         if 400 <= e.code < 500:
             return None
         raise

@@ -11,6 +11,14 @@ import urllib.request
 from urllib.parse import urlparse
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_V4_COMPAT = ipaddress.ip_network("::/96")
+
+
+class BlockedRedirect(urllib.error.HTTPError):
+    """A redirect hop pointed at a non-public address."""
+
+
 def is_safe_public_url(url: str) -> bool:
     try:
         p = urlparse(url or "")
@@ -31,8 +39,13 @@ def is_safe_public_url(url: str) -> bool:
             addr = ipaddress.ip_address(info[4][0])
         except Exception:
             return False
-        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-            addr = addr.ipv4_mapped
+        if isinstance(addr, ipaddress.IPv6Address):
+            if addr.ipv4_mapped is not None:
+                addr = addr.ipv4_mapped
+            elif addr in _NAT64:
+                addr = ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+            elif addr in _V4_COMPAT or addr.is_site_local:
+                return False
         if not addr.is_global or addr.is_multicast:
             return False
     return True
@@ -41,7 +54,7 @@ def is_safe_public_url(url: str) -> bool:
 class _SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not is_safe_public_url(newurl):
-            raise urllib.error.HTTPError(newurl, code, "blocked redirect to non-public address",
+            raise BlockedRedirect(newurl, code, "blocked redirect to non-public address",
                                          headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
