@@ -55,6 +55,15 @@ function post(entry) {
 
 const flush = () => Outbox.flush(store, post);
 
+async function flushAndNotify() {
+  const result = await flush();
+  if (result.sent > 0) {
+    const all = await self.clients.matchAll({ type: "window" });
+    for (const c of all) c.postMessage("flushed");
+  }
+  return result;
+}
+
 function afterShare(response, request) {
   if (request.mode === "navigate") return response;
   const s = response.status;
@@ -116,9 +125,13 @@ self.addEventListener("fetch", (event) => {
 });
 
 self.addEventListener("sync", (event) => {
-  if (event.tag === "flush-outbox") event.waitUntil(flush());
+  if (event.tag === "flush-outbox") {
+    event.waitUntil(flushAndNotify().then((result) => {
+      if (result.kept > 0) throw new Error("outbox not empty; retry sync later");
+    }));
+  }
 });
 
 self.addEventListener("message", (event) => {
-  if (event.data === "flush") event.waitUntil(flush());
+  if (event.data === "flush") event.waitUntil(flushAndNotify().catch(() => {}));
 });

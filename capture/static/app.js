@@ -34,7 +34,19 @@
     setTimeout(showCount, 1500);
   }
 
+  function onFlushed() {
+    const box = document.querySelector("textarea[name=text]");
+    if (document.activeElement === box && box.value) {
+      showCount();
+    } else {
+      location.reload();
+    }
+  }
+
   if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data === "flushed") onFlushed();
+    });
     navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
   }
   flushAndShow();
