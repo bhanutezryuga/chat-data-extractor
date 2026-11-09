@@ -85,6 +85,9 @@ def create_app(settings: Settings) -> FastAPI:
             body = await request.json()
             if not isinstance(body, dict):
                 raise ValueError("bad body")
+            for key in ("text", "type_hint", "client_id"):
+                if body.get(key) is not None and not isinstance(body[key], str):
+                    raise ValueError(f"{key} must be a string")
             result = capture(store, body.get("text") or "",
                              now=datetime.now(timezone.utc),
                              type_hint=body.get("type_hint") or None,

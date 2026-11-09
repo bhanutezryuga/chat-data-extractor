@@ -147,3 +147,31 @@ def test_two_hostless_shares_make_two_items(client):
     client.post("/api/capture", json={"text": "https://… one"})
     client.post("/api/capture", json={"text": "https://… two"})
     assert len(_items(client)) == 2
+
+
+import pytest
+
+
+@pytest.mark.parametrize("body", [
+    {"text": 5}, {"text": "hi", "type_hint": 5}, {"text": "hi", "client_id": 7},
+    {"text": ["a"]},
+])
+def test_api_capture_422_on_non_string_fields(client, body):
+    r = client.post("/api/capture", json=body)
+    assert r.status_code == 422
+    assert "error" in r.json()
+
+
+def test_share_then_worker_in_separate_store(settings, client):
+    from capture.store import Store
+    from capture.worker import run_once
+
+    r = client.post("/share", data={"text": "https://example.com/post"}, follow_redirects=False)
+    assert r.status_code == 303
+    worker_store = Store(settings.db_path)
+    try:
+        assert run_once(worker_store, fetch=lambda u: "Example Post") is True
+    finally:
+        worker_store.close()
+    items = _items(client)
+    assert [(i["status"], i["title"]) for i in items] == [("saved", "Example Post")]

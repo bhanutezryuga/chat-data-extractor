@@ -48,7 +48,7 @@ cd /srv/chat-data-extractor</code></pre></li>
 <pre><code>cp capture/capture.env.example capture/capture.env
 # edit capture.env:
 CAPTURE_ALLOWED_LOGINS=you@example.com</code></pre>
-      Several logins can be comma-separated. An empty list refuses everyone. The file is git-ignored. The setup script already created <code>data-capture/</code> owned by UID 1000. If you set <code>CAPTURE_DATA_DIR</code> to another path, create that directory yourself and make it owned by UID 1000 (<code>sudo install -d -o 1000 -g 1000 /path</code>), or the containers cannot write the database and will keep restarting.</li>
+      Several logins can be comma-separated. An empty list refuses everyone. The file is git-ignored. The setup script already created <code>data-capture/</code> owned by UID 1000. <code>CAPTURE_DATA_DIR</code> is read by Docker Compose from the shell environment or a <code>capture/.env</code> file (not <code>capture.env</code>, which is the containers' env file), and a relative path resolves against <code>capture/</code>. If you set it to another path, create that directory yourself and make it owned by UID 1000 (<code>sudo install -d -o 1000 -g 1000 /path</code>), or the containers cannot write the database and will keep restarting.</li>
     <li><strong>Start the app:</strong>
 <pre><code>docker compose -f capture/compose.yaml up -d --build</code></pre></li>
     <li><strong>Publish it on the tailnet:</strong>
