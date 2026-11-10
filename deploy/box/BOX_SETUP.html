@@ -48,13 +48,13 @@ cd /srv/chat-data-extractor</code></pre></li>
 <pre><code>cp capture/capture.env.example capture/capture.env
 # edit capture.env:
 CAPTURE_ALLOWED_LOGINS=you@example.com</code></pre>
-      Several logins can be comma-separated. An empty list refuses everyone. The file is git-ignored. The setup script already created <code>data-capture/</code> owned by UID 1000. If you set <code>CAPTURE_DATA_DIR</code> to another path, create that directory yourself and make it owned by UID 1000 (<code>sudo install -d -o 1000 -g 1000 /path</code>), or the containers cannot write the database and will keep restarting.</li>
+      Several logins can be comma-separated. An empty list refuses everyone. The file is git-ignored. The setup script already created <code>data-capture/</code> owned by UID 1000. <code>CAPTURE_DATA_DIR</code> is read by Docker Compose from the shell environment or a <code>capture/.env</code> file (not <code>capture.env</code>, which is the containers' env file), and a relative path resolves against <code>capture/</code>. If you set it to another path, create that directory yourself and make it owned by UID 1000 (<code>sudo install -d -o 1000 -g 1000 /path</code>), or the containers cannot write the database and will keep restarting.</li>
     <li><strong>Start the app:</strong>
 <pre><code>docker compose -f capture/compose.yaml up -d --build</code></pre></li>
     <li><strong>Publish it on the tailnet:</strong>
 <pre><code>sudo tailscale serve --bg 8000</code></pre>
       The app listens on <code>127.0.0.1:8000</code> only; Tailscale is the only way in.</li>
-    <li><strong>Install Tailscale on the phone</strong> (set it to "always on") <strong>and on the laptop</strong>, signed in to the same account.</li>
+    <li><strong>Install Tailscale on the phone and on the laptop</strong>, signed in to the same account. Make Tailscale always on (phone): open Android Settings &rarr; Network &amp; internet &rarr; VPN, tap the &#9881; next to Tailscale, and turn on <strong>Always-on VPN</strong>. (Menu names vary a little by phone maker; search Settings for "VPN" if you can't find it.)</li>
     <li><strong>Open <code>https://capture.&lt;tailnet&gt;.ts.net</code></strong> on both.</li>
   </ol>
 
@@ -67,7 +67,27 @@ CAPTURE_ALLOWED_LOGINS=you@example.com</code></pre>
     </ul>
   </div>
 
-  <h2>Updating later</h2>
+  <h2>Install on your phone</h2>
+  <ol>
+    <li>Open <code>https://capture.&lt;tailnet&gt;.ts.net</code> in Chrome on Android.</li>
+    <li>Tap <strong>&#8942;</strong> &rarr; <strong>Add to Home screen</strong> &rarr; <strong>Install</strong>.</li>
+    <li>"Capture" now appears in the share sheet. In Instagram, tap Share; if Capture isn't in the first row of the share sheet, scroll the row or tap <strong>More</strong>.</li>
+    <li>Keep Tailscale on Always-on VPN (see step 8 above) so shares reach the box.</li>
+  </ol>
+
+  <h2>Phone check</h2>
+  <div class="box">
+    <ul style="list-style:none;padding-left:0">
+      <li>&#9744; 1. Install the app from Chrome. "Capture" appears in Instagram &rarr; Share &rarr; More.</li>
+      <li>&#9744; 2. Share a reel. "Saved &#10003;" shows and closes. Within a minute the item has a title on the Home list.</li>
+      <li>&#9744; 3. Share the same reel again. There is still one item.</li>
+      <li>&#9744; 4. Turn Tailscale off and share a different reel. You see "Saved on your phone&hellip;".</li>
+      <li>&#9744; 5. Turn Tailscale on and open the app. The item appears and "shares waiting" disappears.</li>
+      <li>&#9744; 6. Paste a link from the laptop browser. It appears with the "Saved &#10003;" banner.</li>
+    </ul>
+  </div>
+
+  <h2>Updating</h2>
 <pre><code>cd /srv/chat-data-extractor &amp;&amp; deploy/box/update.sh</code></pre>
 
   <h2>Troubleshooting</h2>
@@ -76,7 +96,7 @@ CAPTURE_ALLOWED_LOGINS=you@example.com</code></pre>
     <tr><th>You see</th><th>Cause and fix</th></tr>
     <tr><td>403 "Not allowed"</td><td>The login you are signed in with is not in <code>CAPTURE_ALLOWED_LOGINS</code> in <code>capture.env</code>. Fix it, then run <code>docker compose -f capture/compose.yaml up -d</code>.</td></tr>
     <tr><td>Certificate error in the browser</td><td>HTTPS certificates are not enabled in the Tailscale admin console. Enable them, then run <code>sudo tailscale serve --bg 8000</code> again.</td></tr>
-    <tr><td>Can't connect / times out</td><td>Tailscale is off on that device. Turn it on (phone: set to always on).</td></tr>
+    <tr><td>Can't connect / times out</td><td>Tailscale is off on that device. Turn it on (phone: Always-on VPN, see step 8).</td></tr>
   </table>
   </div>
 </main>

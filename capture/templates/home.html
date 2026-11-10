@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+{% if saved %}<p class="banner">Saved ✓</p>{% endif %}
+{% if error %}<p class="banner error">{{ error }}</p>{% endif %}
+<p id="outbox"></p>
+<form method="post" action="/share">
+  <input type="hidden" name="return_to" value="home">
+  <textarea name="text" rows="4" placeholder="Paste a link or some text" aria-label="Link or text"></textarea>
+  <div class="chips">
+    {% for hint in type_hints %}
+    <label class="chip"><input type="radio" name="type_hint" value="{{ hint }}"> {{ hint|capitalize }}</label>
+    {% endfor %}
+    <label class="chip"><input type="radio" name="type_hint" value="" checked> Let the app decide</label>
+  </div>
+  <button type="submit">Save</button>
+</form>
+<ul class="items">
+  {% for item in items %}
+  <li>
+    <div class="line">{{ item.line }}</div>
+    <div class="meta">
+      {% if item.type_hint %}<span class="tag">{{ item.type_hint }}</span>{% endif %}
+      <span class="tag status-{{ item.status }}">{{ item.status }}</span>
+      <time>{{ item.created_at }}</time>
+    </div>
+    {% if item.status == "needs_you" and item.status_reason %}
+    <div class="reason">{{ item.status_reason }}</div>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endblock %}

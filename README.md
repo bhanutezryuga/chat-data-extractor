@@ -2,6 +2,12 @@
 
 Catch links/files shared into a **Telegram bot**, understand what each is and what it's for, and write it into your **Logseq knowledge base** — with a weekly review digest so saves don't rot. **Google Gemini** is the single LLM provider. A minimal local dashboard shows capture stats and surfaces anything stuck.
 
+## New capture app (in progress)
+A replacement is being built in `capture/`: one-tap share from Android into a home box, reached only over Tailscale, with an offline outbox on the phone. The old Telegram app keeps running until switch-over.
+- Box setup, phone install and update: [deploy/box/BOX_SETUP.html](deploy/box/BOX_SETUP.html)
+- Python tests: `python -m pytest capture/tests -q`
+- JS tests: `node --test "capture/tests/js/*.test.cjs"`
+
 ## Why
 Useful reels, shorts, videos, PDFs, and articles get lost in chat scrollback and never acted on. This turns them into a linked, backlinked knowledge base you actually revisit.
 

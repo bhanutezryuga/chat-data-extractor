@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="banner">Saved ✓</p>
+{% endblock %}
+{% block scripts %}
+<script>
+setTimeout(() => { window.close(); location.replace("/"); }, 1000);
+</script>
+{% endblock %}

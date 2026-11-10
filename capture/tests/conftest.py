@@ -32,3 +32,12 @@ def _repo_root_cwd():
     os.chdir(REPO_ROOT)
     yield
     os.chdir(old)
+
+
+@pytest.fixture
+def store(settings):
+    from capture.store import Store
+
+    s = Store(settings.db_path)
+    yield s
+    s.close()
